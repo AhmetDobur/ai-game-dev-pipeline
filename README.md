@@ -1,201 +1,292 @@
-# AI Game Development Pipeline — Project README
+# AI Game Development Pipeline
 
-## Goal
+A game-agnostic, single-GPU, agent-orchestrated pipeline that turns an uploaded
+`instruction.md` (plus optional reference images) into a playable Godot 4 game
+build — code, 2D art, 3D assets, rigging/animation, and voice audio all
+generated, scheduled, and validated automatically.
 
-Build a fully automated, agent-orchestrated pipeline that generates a playable
-game demo from a text description — combining LLM orchestration, 2D/3D asset
-generation, rigging/animation, audio, and code generation — with minimal to
-zero manual human labor.
+The pipeline is the product. The first proof-of-concept input will be a small
+original fighting-game demo, but nothing about the game is hardcoded: the game
+arrives as an instruction file through the GUI, gets decomposed into a typed
+task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-**Proof-of-concept target:** a small original fighting-game demo (inspired by
-the genre, not a copy of any existing IP) featuring:
-- 2 playable characters
-- 1 arena/map
-- Minimal UI/HUD
-- Basic combat system (attack, block, hit reactions, KO state)
-- Deliverable as a Steam Playtest build for early feedback
-
-**Author framing:** this project is built by a prompt engineer / AI
-integration engineer, not a traditional game developer — the pipeline itself
-is the product, and the demo is the proof it works.
+- **Version:** 0.1.0 (semver; git tags `vX.Y.Z`)
+- **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
+- **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
+  writes is reviewable plain text; headless import/export)
+- **Dev machine note:** the spine is pure HTTP + subprocess and runs/tests
+  anywhere (developed on macOS); only real generation needs the CUDA box.
 
 ---
 
-## Hardware Constraints
-
-| Component | Spec |
-|---|---|
-| GPU | Titan RTX (24GB VRAM) |
-| CPU | i5-14600K |
-| RAM | 32GB system RAM |
-
-**Implication:** only one large model can comfortably occupy VRAM at a time.
-The architecture is built around **sequential model swapping**, not parallel
-multi-model loading. The router/orchestrator model stays resident at all
-times (small footprint); larger models (coder, TTI, TT3D) load on-demand and
-unload after each batch.
-
----
-
-## Model Stack
-
-### Orchestrator / Router (always resident, ~4GB VRAM)
-- **DeepSeek-R1-Distill-Qwen-7B** (Q4_K_M) — task decomposition, queue
-  management, output validation. Chosen for distilled chain-of-thought
-  reasoning at a small footprint.
-
-### Coder (loads on-demand, ~18-20GB VRAM)
-- **Qwen3-Coder-30B-A3B** (Q4_K_M, MoE) — game logic, combat state machine,
-  hitbox/hurtbox definitions, headless engine build scripts. Trained for
-  agentic tool calling; only ~3B params active per token, so fast at Q4.
-- **Fallback: Qwen2.5-Coder-32B** (dense) — speaks a non-standard tool-call
-  dialect: 0/5 structured `tool_calls` through plain OpenAI-compatible
-  serving (tested 2026-09-01, llama-server `--jinja`; ignores the hermes
-  `<tool_call>` format its own template defines). But with a `<tools>`
-  few-shot system prompt + a small regex shim that converts the output to
-  `tool_calls`, it scored 5/5 including multi-turn follow-up and
-  no-tool restraint (same day, temp 0.6). Viable agentically **only behind
-  that shim**; the MoE above needs no shim, so it stays primary.
-- Alternatives considered: Qwen3-Coder-Next-80B-A3B (MoE, too large for
-  concurrent residency with other stages), Qwen3-8B (lighter fallback).
-
-### Text-to-Image / TTI (loads on-demand, ~12GB VRAM)
-- SDXL (default) / Flux.1-dev (stretch goal) — concept art, character
-  reference sheets, textures, environment art, UI mockups. Note: Titan RTX
-  is Turing (no FP8/BF16), so Flux's usual ~12GB fp8 path doesn't apply —
-  Flux needs GGUF/NF4 quants and will be slow; SDXL is the safe default.
-- Style consistency enforced via **IP-Adapter** (reference-image
-  conditioning) or a project-specific **LoRA** trained once per project.
-
-### Text/Image-to-3D (loads on-demand, ~12-16GB VRAM)
-- **TRELLIS** (MIT — primary) or **Hunyuan3D-2.x** (Tencent Hunyuan
-  Community License, which **excludes the EU** — not safe for a Steam
-  release from NL) — generates meshes +
-  PBR textures conditioned on both the TTI concept image and the text spec,
-  ensuring visual match between 2D concept and 3D asset.
-
-### Rigging & Animation (cloud API, automation target)
-- **Meshy API** — auto-rigs humanoid meshes in under 30 seconds, applies
-  preset motion clips (idle, walk, punch, kick, block, hit-react, KO) from
-  a 600+ clip library, exports FBX with standard bone hierarchies.
-- Fallback for custom moves: text-to-motion generation (prompt-based, e.g.
-  "a fighter throws a roundhouse kick") for anything outside the preset
-  library.
-
-### Text-to-Speech / TTS (~4-8GB VRAM, can run without unloading router)
-- **Orpheus 3B** (Apache 2.0, Llama-3B backbone) — dialogue, announcer
-  lines, zero-shot voice cloning, supports emotion tags (`<laugh>`,
-  `<sigh>`, etc.), ~200ms streaming latency.
-
-### Speech-to-Text / STT (optional, for interactive voice input)
-- Whisper large-v3 / Faster-Whisper — only needed if voice-driven
-  interaction is added later; not required for the base demo.
-
----
-
-## Pipeline Strategy
-
-### Stage 0 — Style Lock (once per project)
-Router queues a batch of reference images from the TTI model, builds an
-IP-Adapter embedding or trains a LoRA, and saves it as the project's style
-reference. Every subsequent TTI task conditions on this reference to keep
-theme/style consistent across all assets.
-
-### Stage 1 — Task Decomposition
-The resident router (DeepSeek-R1-Distill-Qwen-7B) takes a game/feature
-description and breaks it into a typed, dependency-aware task queue:
+## Architecture
 
 ```
-Task {
-  id: string
-  type: "code" | "design_2d" | "design_3d" | "rig_animate" | "audio" | "validate"
-  depends_on: [task_id, ...]
-  spec: { ... }
-  model_needed: string
-  status: "pending" | "in_progress" | "done" | "failed"
-  output_path: string | null
+instruction.md ──▶ GUI (FastAPI, localhost:8500)
+      + refs           │ creates run
+                       ▼
+              decompose.py ─── resident router LLM (7B, always loaded)
+                       │  typed, dependency-aware task list
+                       ▼
+              SQLite queue (workspace/pipeline.db)
+                       │
+                       ▼
+              scheduler.py — WAVE SCHEDULER
+      ┌────────────────┼───────────────────────────────┐
+      │ GPU waves (one model loaded at a time)         │ async lane (no VRAM)
+      │  coder → sdxl → trellis → tts → (repeat)       │  rig_animate → Meshy API
+      │  each wave drains ALL ready tasks of its type, │ local lane (CPU)
+      │  validates IN-WAVE so retries reuse the        │  assemble → godot --headless
+      │  already-loaded model                          │
+      └────────────────┼───────────────────────────────┘
+                       ▼
+              validate.py (objective checks per branch)
+                       ▼
+              workspace/runs/<id>/game/ ──▶ godot --export-release ──▶ build
+```
+
+### The wave scheduler (the core optimization)
+
+Only one large model fits in 24GB, and model loads cost minutes. The scheduler
+therefore never walks the queue in plain dependency order. Instead:
+
+1. **Waves**: tasks are grouped by the model that serves them
+   (`code`→coder LLM, `design_2d`→SDXL, `design_3d`→TRELLIS, `audio`→TTS).
+   A wave loads its model once (`wave_setup`), drains **every** ready task of
+   that type — including tasks whose dependencies complete *during* the wave —
+   then unloads (`wave_teardown`). Model loads per cycle drop from
+   one-per-task to one-per-type.
+2. **In-wave validation and retry**: every output is validated immediately,
+   while the producing model is still resident. A failed artifact retries up
+   to `max_attempts` times *inside the wave* (the executor receives
+   `last_error` so the retry prompt says what was wrong) instead of waiting a
+   full cycle and paying a reload.
+3. **Async lane**: `rig_animate` is a network-bound Meshy API call — it runs
+   in background threads *alongside* whatever GPU wave is active.
+4. **Local lane**: `assemble` is a CPU-only `godot --headless` subprocess and
+   runs between waves.
+5. The **router LLM stays resident** the whole run (small footprint); the
+   coder LLM starts/stops around its own wave; ComfyUI is asked to free VRAM
+   (`POST /free`) after image/mesh waves.
+
+### Task lifecycle
+
+`pending → in_progress → done | failed`, with `attempts` counted per task.
+A task whose dependency failed stays `pending` forever; the run finishes as
+`failed` listing failed + blocked counts. Everything is inspectable in the
+GUI table or `python run.py status <run_id>`.
+
+### Task schema
+
+Stored in SQLite (`tasks` table); produced by the router from your
+instruction file:
+
+```json
+{
+  "id": "meshA",
+  "type": "design_3d",
+  "depends_on": ["artA"],
+  "spec": {"prompt": "...", "concept_from": "artA"}
 }
 ```
 
-Stored in a local SQLite/JSON queue.
+| type | spec fields | executed by | validated by |
+|---|---|---|---|
+| `code` | `file`, `description` | coder LLM → writes into `game/` | `godot --check-only` per `.gd` file |
+| `design_2d` | `prompt`, `purpose` | ComfyUI SDXL workflow | file type + size floor |
+| `design_3d` | `prompt`, `concept_from` | ComfyUI TRELLIS workflow | mesh file type + size floor |
+| `rig_animate` | `mesh_from`, `animations[]` | Meshy REST API | FBX exists + size floor |
+| `audio` | `text`, `voice` | Orpheus-FastAPI | WAV parses, duration ≥ 0.2s |
+| `assemble` | `export_preset` | `godot --headless --export-release` | build artifact ≥ 1MB |
 
-### Stage 2 — Dispatcher Loop (sequential, VRAM-aware)
-1. Poll queue for the next task whose dependencies are satisfied.
-2. Load only the model required for that task type into VRAM.
-3. Run the task (batch multiple same-type tasks together to minimize
-   reload overhead).
-4. Write output path back to the task record, mark as done.
-5. Unload the model, flush VRAM (`torch.cuda.empty_cache()` + process
-   teardown), loop.
+**Validation policy:** only objective signals reject an artifact (parse
+failures, missing/too-small files, dead audio, failed exports). No LLM opinion
+ever fails a task — an LLM asked to critique working output will always find
+something, and acting on that rewrites good artifacts into bad ones.
 
-Single-threaded execution only — no parallel job runs, to avoid VRAM/RAM
-contention on this hardware.
+### Repo layout
 
-### Stage 3 — Generation Branches
-- `design_2d` → TTI model, style-locked, produces concept art/textures/UI
-- `design_3d` → TT3D model, conditioned on matching `design_2d` output +
-  spec text
-- `rig_animate` → Meshy API, auto-rig + preset/generated motion clips,
-  exported as FBX
-- `audio` → Orpheus 3B, dialogue/announcer lines from LLM-written script
-- `code` → Qwen3-Coder-30B-A3B, combat state machine, hitbox/hurtbox logic,
-  input handling, headless engine build scripts
-
-### Stage 4 — Validation
-Router (DeepSeek-R1-Distill-Qwen-7B) checks each output against its
-original spec before marking the task complete — flags mismatches for
-regeneration (e.g. 3D asset doesn't match concept art tags, dialogue
-doesn't match character voice).
-
-### Stage 5 — Engine Assembly
-Coder model generates a headless build script (e.g. Unity C# + command-line
-batch mode) that imports all assets, wires prefabs, binds animations to the
-combat state machine, and produces a runnable build — no manual GUI steps.
-
----
-
-## Requirements
-
-### Software
-- Python 3.11+ (dispatcher/orchestration layer)
-- llama.cpp / Ollama / vLLM (LLM inference backends)
-- ComfyUI or diffusers (TTI pipeline)
-- TRELLIS inference environment (Hunyuan3D-2.x only if license territory issue is resolved)
-- Meshy API key (rigging/animation)
-- Orpheus-FastAPI or equivalent (TTS serving)
-- SQLite (task queue persistence)
-- Unity or Unreal Engine (headless build target)
-- Git + version control for generated asset tracking
-
-### Hardware
-- Titan RTX (24GB VRAM) — confirmed sufficient for sequential single-model
-  loading up to 32B-dense-class models at Q4 quantization
-- 32GB system RAM — sufficient given no parallel model loading; keep
-  background processes minimal during generation runs
-- Stable internet connection for Meshy API calls
-
-### Distribution (Steam)
-- Steam Direct fee ($100, one-time per game)
-- Steamworks account + app page setup
-- **Steam AI Content Disclosure** required for player-facing AI content:
-  art, 3D models, audio, dialogue (code generation via AI coding tools is
-  exempt from disclosure)
-- Use **Steam Playtest** feature for limited early access testing before
-  any public release
-- Legal note: build as an original IP inspired by the fighting-game genre —
-  do not reproduce copyrighted characters, names, or move sets
+```
+pipeline/
+  config.py        pipeline.toml loader (leaf module, imports nothing)
+  db.py            SQLite queue: runs, tasks, deps, ready-set, run_finished
+  decompose.py     router prompt → validated task list → queue
+  scheduler.py     wave scheduler + async/local lanes + in-wave retry
+  executors.py     production executors (one per task type)
+  orchestrate.py   wires config+adapters+scheduler for one run
+  validate.py      objective per-branch validators
+  gui.py           FastAPI single page: upload, start, live task table
+  adapters/
+    llm.py         llama-server lifecycle + chat + Qwen2.5 <tools> shim
+    comfy.py       ComfyUI /prompt → poll /history → download outputs
+    meshy.py       rig + animate + FBX download
+    tts.py         Orpheus /v1/audio/speech
+run.py             CLI: gui | run <instruction.md> [--ref img] | status
+workflows/         ComfyUI API-format workflow JSONs ({{prompt}} placeholders)
+pipeline.toml.example
+requirements.txt   pinned exact versions (core: fastapi, uvicorn, requests, python-multipart)
+tests/             spine tests — no GPU, no network, run anywhere
+scripts/           live-server integration checks (need a running model)
+```
 
 ---
 
-## Known Limitations (Honest Assessment)
+## Quickstart
 
-- Combat "feel" (frame data tuning, hit timing polish) is generated, not
-  hand-tuned — expect a rough, functional demo rather than a polished
-  fighting game.
-- Preset animation clips may not perfectly match custom character
-  proportions; text-to-motion fallback helps but isn't guaranteed to be
-  seamless.
-- Style consistency across TTI/TT3D depends heavily on the Stage 0 style
-  lock being done well — skipping this step will produce mismatched assets.
-- This pipeline accelerates asset creation and code scaffolding; it does
-  not replace game design or playtesting judgment.
+```bash
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt        # Windows
+cp pipeline.toml.example pipeline.toml               # fill in your paths
+set MESHY_API_KEY=msy_xxx                            # or setx for persistence
+.venv/Scripts/python run.py gui                      # http://127.0.0.1:8500
+```
+
+Upload an `instruction.md` (and optional reference images) in the GUI, press
+**Start run**, watch the task table drain. Or headless:
+
+```bash
+python run.py run my-game/instruction.md --ref my-game/style.png
+python run.py status
+```
+
+Run tests (no GPU needed):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+
+---
+
+## Installing the tool stack (Windows)
+
+Everything below is external to this repo — the spine only talks to these over
+HTTP or subprocess. Install once, point `pipeline.toml` at them.
+
+### 1. NVIDIA driver + CUDA
+
+Recent Game Ready or Studio driver is enough for llama.cpp (cuBLAS builds
+bundle what they need) and ComfyUI (PyTorch wheels ship CUDA runtime). Verify:
+`nvidia-smi` shows the Titan RTX and 24576MiB.
+
+### 2. llama.cpp (`llama-server`)
+
+Download the latest **cudart** Windows release from
+<https://github.com/ggml-org/llama.cpp/releases> (e.g.
+`llama-bXXXX-bin-win-cuda-x64.zip`), unzip to `C:\llama.cpp`.
+Set `paths.llama_server` in `pipeline.toml`. The pipeline starts/stops it
+itself with the right flags (`--jinja`, `--flash-attn`, ports from config) —
+do not run it manually during a pipeline run.
+
+### 3. Models (GGUF)
+
+| Role | Model | File | VRAM |
+|---|---|---|---|
+| Router (resident) | DeepSeek-R1-Distill-Qwen-7B | `Q4_K_M` GGUF | ~4GB |
+| Coder (wave) | Qwen3-Coder-30B-A3B-Instruct | `Q4_K_M` GGUF | ~18GB |
+
+Get them from Hugging Face (`bartowski` or `unsloth` GGUF repos). Put paths in
+`pipeline.toml` under `[llm]`.
+
+**Coder fallback — Qwen2.5-Coder-32B (dense):** speaks a non-standard
+tool-call dialect. Measured 2026-09-01 on llama-server `--jinja`: 0/5 native
+structured `tool_calls` (it ignores the hermes `<tool_call>` format its own
+chat template declares and invents a `<tools>` wrapper), but 5/5 with the
+`<tools>` few-shot system prompt + regex shim that ships in
+`pipeline/adapters/llm.py` (`TOOLS_SHIM_SYSTEM`, `parse_tool_call`). Same
+model scored 13/14 on a hard concurrency benchmark where the 80B MoE
+deadlocked at 0/14 — usable, but only behind the shim. The 30B-A3B MoE needs
+no shim and stays primary.
+
+### 4. ComfyUI (SDXL + TRELLIS)
+
+```bash
+git clone https://github.com/comfyanonymous/ComfyUI C:\ComfyUI
+cd C:\ComfyUI && python -m venv venv && venv\Scripts\pip install -r requirements.txt
+```
+
+- **SDXL**: download `sd_xl_base_1.0.safetensors` into
+  `ComfyUI\models\checkpoints\`. The bundled `workflows/sdxl.json` works as-is
+  (1024×1024, DPM++ 2M Karras, 30 steps). Style-lock via IP-Adapter/LoRA can
+  be added to that JSON later without touching pipeline code.
+- **TRELLIS**: the roughest install of the stack on native Windows (custom
+  CUDA ops). Use a ComfyUI TRELLIS custom-node pack (install via ComfyUI
+  Manager), build the image→3D graph in the ComfyUI editor, then
+  **Workflow → Export (API)** and save it over `workflows/trellis.json`,
+  putting `{{prompt}}` / `{{image}}` where the conditioning goes.
+  `workflows/trellis.json` in this repo is a placeholder that fails loudly
+  until you do this.
+- Run ComfyUI before pipeline runs: `venv\Scripts\python main.py --listen 127.0.0.1`
+  (default port 8188 matches `pipeline.toml`). The pipeline calls
+  `POST /free` between waves so SDXL/TRELLIS don't fight the coder for VRAM.
+
+### 5. Orpheus TTS
+
+```bash
+git clone https://github.com/Lex-au/Orpheus-FastAPI C:\Orpheus-FastAPI
+```
+
+Follow its README (needs its own small GGUF + llama.cpp or LM Studio backend).
+Serve on port 5005 (or update `[tts] url`). ~4-8GB VRAM — the scheduler gives
+it its own wave, so it never co-resides with the big models.
+
+### 6. Godot 4
+
+Download the stable Windows editor binary from <https://godotengine.org/download>
+plus **export templates** (Editor → Manager → Export Templates, or the
+`.tpz` from the same page — required for `--export-release`). Set
+`paths.godot`. In the generated project, the assemble step expects an export
+preset named in the task spec (default `"Windows Desktop"`).
+
+### 7. Meshy
+
+Create an API key at <https://www.meshy.ai> → set the `MESHY_API_KEY`
+environment variable. Network-bound; runs concurrently with GPU waves.
+
+---
+
+## Configuration reference
+
+All knobs live in `pipeline.toml` (see `pipeline.toml.example`; defaults in
+`pipeline/config.py`):
+
+| Section | Key | Meaning |
+|---|---|---|
+| `paths` | `workspace` | runs, artifacts, logs, SQLite DB root |
+| `paths` | `godot`, `llama_server` | binaries |
+| `llm` | `router_gguf`, `coder_gguf`, `*_port` | model files + ports |
+| `llm` | `ctx_size`, `temperature`, `max_tokens` | generation params |
+| `llm` | `load_timeout_s`, `request_timeout_s` | generous by design — a slow local model must never be cut off mid-thought |
+| `comfy` | `url`, `sdxl_workflow`, `trellis_workflow`, `timeout_s` | ComfyUI |
+| `tts` | `url`, `timeout_s` | Orpheus endpoint |
+| `meshy` | `api_key_env`, `poll_interval_s`, `timeout_s` | Meshy REST |
+| `scheduler` | `max_attempts` | in-wave retries per task |
+| `scheduler` | `wave_order` | GPU wave sequence per cycle |
+| `gui` | `host`, `port` | GUI bind (localhost only by default) |
+
+## Versioning
+
+- Semantic versioning; `pipeline.__version__` is the source of truth, releases
+  are git tags `vX.Y.Z`.
+- `requirements.txt` pins exact versions of the 4 core runtime deps. Heavy
+  optional validators (e.g. CLIP style-match scoring) will ship as a separate
+  `requirements-validate.txt` extra so the core spine never drags in torch.
+
+## Honest limitations
+
+- Visual ceiling is set by the **generated assets** (TRELLIS meshes, Meshy
+  auto-rigs ≈ solid stylized game props, not AAA hero characters) — not by
+  Godot. Expect "good-looking stylized 3D", not photoreal AAA.
+- Combat feel is generated, not hand-tuned: rough functional demo first.
+- Style consistency across 2D→3D depends on doing a style-lock (IP-Adapter or
+  project LoRA) in the SDXL workflow; skipping it produces mismatched assets.
+- `workflows/trellis.json` must be exported from your own ComfyUI install
+  once — TRELLIS node packs differ too much to ship a universal graph.
+
+## Steam notes (for the eventual demo)
+
+- Steam Direct fee: $100 one-time per game.
+- **AI content disclosure** is required for player-facing AI art, models,
+  audio, and dialogue (AI-generated *code* is exempt).
+- Use Steam Playtest for early feedback before any public release.
+- Ship original IP only — genre-inspired, no copied characters or move sets.

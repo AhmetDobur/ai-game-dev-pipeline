@@ -1,0 +1,172 @@
+"""Stage 2: the wave scheduler.
+
+Core policy (the whole point of this module): minimize model switches. One model is
+loaded at a time; a wave drains EVERY ready task of that model's type, validating
+in-wave so retries reuse the already-loaded model instead of costing a reload.
+Network-bound tasks (rig_animate) run in a background lane alongside GPU waves;
+assemble tasks are CPU-only and run between waves.
+"""
+import threading
+import traceback
+from pathlib import Path
+from typing import Callable
+
+from . import db
+from .validate import validate
+
+# task type -> wave name (which loaded resource serves it)
+TASK_WAVE = {
+    "code": "coder",
+    "design_2d": "sdxl",
+    "design_3d": "trellis",
+    "audio": "tts",
+}
+LANE_TYPES = {"rig_animate"}      # async, no local VRAM
+LOCAL_TYPES = {"assemble"}        # CPU subprocess, no model
+
+# Executor: (task, out_dir) -> list of produced Paths.
+Executor = Callable[[dict, Path], list[Path]]
+
+
+class Scheduler:
+    def __init__(self, conn, run_id: str, executors: dict[str, Executor],
+                 workspace: Path, max_attempts: int = 3,
+                 wave_order: list[str] | None = None,
+                 wave_setup: dict[str, Callable[[], None]] | None = None,
+                 wave_teardown: dict[str, Callable[[], None]] | None = None,
+                 godot_binary: str = "godot"):
+        self.conn, self.run_id = conn, run_id
+        self.executors = executors
+        self.workspace = workspace
+        self.max_attempts = max_attempts
+        self.wave_order = wave_order or ["coder", "sdxl", "trellis", "tts"]
+        self.wave_setup = wave_setup or {}
+        self.wave_teardown = wave_teardown or {}
+        self.godot_binary = godot_binary
+        self._lane_threads: list[threading.Thread] = []
+
+    # -- public ---------------------------------------------------------------
+
+    def run(self) -> None:
+        db.set_run_status(self.conn, self.run_id, "in_progress")
+        try:
+            while not db.run_finished(self.conn, self.run_id):
+                progressed = self._one_cycle()
+                self._join_lanes()
+                if not progressed:
+                    # lanes are joined, so a zero-progress cycle is deterministic:
+                    # anything still ready has no serving wave — fail it visibly
+                    for t in db.ready_tasks(self.conn, self.run_id):
+                        db.update_task(self.conn, t["id"], status="failed",
+                                       error=f"no wave serves task type {t['type']!r}"
+                                             f" (wave_order={self.wave_order})")
+                    break
+            tasks = db.list_tasks(self.conn, self.run_id)
+            failed = [t for t in tasks if t["status"] == "failed"]
+            blocked = [t for t in tasks if t["status"] == "pending"]
+            if failed or blocked:
+                db.set_run_status(self.conn, self.run_id, "failed",
+                                  f"{len(failed)} failed, {len(blocked)} blocked")
+            else:
+                db.set_run_status(self.conn, self.run_id, "done")
+        except Exception as e:
+            db.set_run_status(self.conn, self.run_id, "failed",
+                              f"{e}\n{traceback.format_exc()[-1500:]}")
+            raise
+
+    # -- internals ------------------------------------------------------------
+
+    def _one_cycle(self) -> bool:
+        """One pass over lanes, local tasks and every wave. Returns True if any task ran."""
+        progressed = self._start_lane_tasks()
+        progressed |= self._run_tasks_of_types(LOCAL_TYPES)
+
+        for wave in self.wave_order:
+            types = {t for t, w in TASK_WAVE.items() if w == wave}
+            ready = [t for t in db.ready_tasks(self.conn, self.run_id)
+                     if t["type"] in types]
+            if not ready:
+                continue
+            setup = self.wave_setup.get(wave)
+            teardown = self.wave_teardown.get(wave)
+            if setup:
+                setup()  # load the model once for the whole wave
+            try:
+                while ready:
+                    for task in ready:
+                        self._execute_with_retries(task)
+                        progressed = True
+                    # dependents of just-finished tasks may now be ready in the SAME wave
+                    ready = [t for t in db.ready_tasks(self.conn, self.run_id)
+                             if t["type"] in types]
+            finally:
+                if teardown:
+                    teardown()  # unload before the next wave
+        return progressed
+
+    def _run_tasks_of_types(self, types: set[str]) -> bool:
+        ran = False
+        for task in [t for t in db.ready_tasks(self.conn, self.run_id)
+                     if t["type"] in types]:
+            self._execute_with_retries(task)
+            ran = True
+        return ran
+
+    def _start_lane_tasks(self) -> bool:
+        started = False
+        for task in [t for t in db.ready_tasks(self.conn, self.run_id)
+                     if t["type"] in LANE_TYPES]:
+            db.update_task(self.conn, task["id"], status="in_progress")
+            th = threading.Thread(target=self._lane_run, args=(task,), daemon=True)
+            th.start()
+            self._lane_threads.append(th)
+            started = True
+        return started
+
+    def _lane_run(self, task: dict) -> None:
+        """Thread body for lane tasks: nothing may escape, or the task would be
+        orphaned in_progress and the run's terminal status would lie."""
+        try:
+            self._execute_with_retries(task, claimed=True)
+        except Exception as e:
+            db.update_task(self.conn, task["id"], status="failed",
+                           error=f"lane thread crashed: {type(e).__name__}: {e}")
+
+    def _join_lanes(self) -> None:
+        for th in self._lane_threads:
+            th.join()
+        self._lane_threads.clear()
+
+    def _execute_with_retries(self, task: dict, claimed: bool = False) -> None:
+        if not claimed:
+            db.update_task(self.conn, task["id"], status="in_progress")
+        executor = self.executors.get(task["type"])
+        if executor is None:
+            db.update_task(self.conn, task["id"], status="failed",
+                           error=f"no executor for type {task['type']!r}")
+            return
+        out_dir = self.workspace / "artifacts" / task["id"]
+        last_error = ""
+        for attempt in range(1, self.max_attempts + 1):
+            db.update_task(self.conn, task["id"], attempts=attempt)
+            try:
+                # pass the previous failure so the executor can prompt a fix,
+                # and each dependency's outputs so data flows along edges
+                task_view = dict(task)
+                task_view["last_error"] = last_error
+                task_view["dep_outputs"] = {
+                    dep: (dt["output_path"].split(";") if dt and dt["output_path"] else [])
+                    for dep in task["depends_on"]
+                    for dt in [db.get_task(self.conn, dep)]
+                }
+                outputs = executor(task_view, out_dir)
+                ok, detail = validate(task, outputs, godot_binary=self.godot_binary,
+                                      project_dir=self.workspace / "game")
+            except Exception as e:  # executor crash counts as a failed attempt
+                ok, detail, outputs = False, f"{type(e).__name__}: {e}", []
+            if ok:
+                db.update_task(self.conn, task["id"], status="done",
+                               output_path=";".join(str(p) for p in outputs), error="")
+                return
+            last_error = detail
+        db.update_task(self.conn, task["id"], status="failed", error=last_error)

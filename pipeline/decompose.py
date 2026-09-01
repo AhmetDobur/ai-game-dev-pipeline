@@ -1,0 +1,81 @@
+"""Stage 1: resident router LLM turns instruction.md into a typed, dependency-aware
+task list, which is inserted into the SQLite queue."""
+import json
+
+from . import db
+from .adapters.llm import LlamaServer, extract_json
+
+DECOMPOSE_PROMPT = """You are the task decomposer of an automated game-development pipeline.
+
+Read the game description below and break it into a dependency-aware task list.
+
+Allowed task types and what their spec must contain:
+- "design_2d": {{"prompt": <SDXL prompt>, "purpose": <what this art is for>}}
+- "design_3d": {{"prompt": <text spec>, "concept_from": <design_2d task id>}}
+- "rig_animate": {{"mesh_from": <design_3d task id>, "animations": [<clip names>]}}
+- "code": {{"file": <relative path in the Godot project>, "description": <what to implement>}}
+- "audio": {{"text": <line to speak>, "voice": <voice name>}}
+- "assemble": {{"export_preset": <Godot export preset name>}}
+
+Rules:
+- Every task: {{"id": <short unique string>, "type": <type>, "depends_on": [<ids>], "spec": {{...}}}}
+- design_3d depends on the design_2d it is conditioned on. rig_animate depends on its design_3d.
+- code tasks for the Godot project; exactly one final "assemble" task depending on everything.
+- Reference images uploaded by the user: {ref_note}
+
+Game description:
+---
+{instruction}
+---
+
+Reply with ONLY a JSON array of tasks."""
+
+
+def decompose(router: LlamaServer, instruction: str, reference_images: list[str],
+              temperature: float = 0.6, max_tokens: int = 4096) -> list[dict]:
+    ref_note = ", ".join(reference_images) if reference_images else "none"
+    prompt = DECOMPOSE_PROMPT.format(instruction=instruction, ref_note=ref_note)
+    reply = router.chat([{"role": "user", "content": prompt}],
+                        temperature=temperature, max_tokens=max_tokens)
+    tasks = extract_json(reply)
+    validate_task_list(tasks)
+    return tasks
+
+
+def validate_task_list(tasks) -> None:
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("decomposition is not a non-empty JSON array")
+    ids = [t.get("id") for t in tasks]
+    if len(ids) != len(set(ids)) or any(not i for i in ids):
+        raise ValueError("task ids must be unique and non-empty")
+    known = set(ids)
+    for t in tasks:
+        if t.get("type") not in db.TASK_TYPES:
+            raise ValueError(f"task {t.get('id')}: unknown type {t.get('type')!r}")
+        if not isinstance(t.get("spec"), dict):
+            raise ValueError(f"task {t.get('id')}: spec must be an object")
+        for dep in t.get("depends_on", []):
+            if dep not in known:
+                raise ValueError(f"task {t.get('id')}: unknown dependency {dep!r}")
+
+
+def insert_tasks(conn, run_id: str, tasks: list[dict]) -> None:
+    """Insert with run-scoped ids so decomposer ids never collide across runs.
+    Spec values that reference another task (concept_from, mesh_from, ...) are
+    remapped too, so executors can resolve them via dep_outputs."""
+    id_map = {t["id"]: f"{run_id}-{t['id']}" for t in tasks}
+
+    def remap(value):
+        if isinstance(value, str):
+            return id_map.get(value, value)
+        if isinstance(value, list):
+            return [remap(v) for v in value]
+        if isinstance(value, dict):
+            return {k: remap(v) for k, v in value.items()}
+        return value
+
+    for t in tasks:
+        db.add_task(conn, run_id, t["type"], remap(t["spec"]),
+                    depends_on=[id_map[d] for d in t.get("depends_on", [])],
+                    task_id=id_map[t["id"]])
+    print(json.dumps({"run": run_id, "tasks": len(tasks)}))

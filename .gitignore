@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+workspace/
+pipeline.toml
+.pytest_cache/

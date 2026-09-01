@@ -1,0 +1,4 @@
+{
+  "_comment": "PLACEHOLDER — export your own from ComfyUI once the TRELLIS custom nodes are installed: build the graph in the ComfyUI editor, then 'Workflow > Export (API)'. Put {{prompt}} where the text conditioning goes and {{image}} where the concept image path goes, and save over this file. See README 'Install: TRELLIS'.",
+  "_expected_placeholders": ["{{prompt}}", "{{image}}"]
+}
