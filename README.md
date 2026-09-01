@@ -48,12 +48,14 @@ unload after each batch.
 - **Qwen3-Coder-30B-A3B** (Q4_K_M, MoE) — game logic, combat state machine,
   hitbox/hurtbox definitions, headless engine build scripts. Trained for
   agentic tool calling; only ~3B params active per token, so fast at Q4.
-- **Ruled out: Qwen2.5-Coder-32B** (dense) — tested 2026-09-01 via
-  llama-server `--jinja`: 0/5 structured tool calls on `tool_choice=auto`;
-  emits raw JSON in `content` with an invented `<tools>` wrapper instead of
-  the `<tool_call>` format its own template defines, and even
-  `tool_choice=required` fails to parse. Usable for plain prompt→code
-  generation only, not as an agentic coder.
+- **Fallback: Qwen2.5-Coder-32B** (dense) — speaks a non-standard tool-call
+  dialect: 0/5 structured `tool_calls` through plain OpenAI-compatible
+  serving (tested 2026-09-01, llama-server `--jinja`; ignores the hermes
+  `<tool_call>` format its own template defines). But with a `<tools>`
+  few-shot system prompt + a small regex shim that converts the output to
+  `tool_calls`, it scored 5/5 including multi-turn follow-up and
+  no-tool restraint (same day, temp 0.6). Viable agentically **only behind
+  that shim**; the MoE above needs no shim, so it stays primary.
 - Alternatives considered: Qwen3-Coder-Next-80B-A3B (MoE, too large for
   concurrent residency with other stages), Qwen3-8B (lighter fallback).
 
