@@ -45,19 +45,30 @@ unload after each batch.
   reasoning at a small footprint.
 
 ### Coder (loads on-demand, ~18-20GB VRAM)
-- **Qwen3-Coder-32B** (Q4_K_M dense) — game logic, combat state machine,
-  hitbox/hurtbox definitions, headless engine build scripts.
+- **Qwen3-Coder-30B-A3B** (Q4_K_M, MoE) — game logic, combat state machine,
+  hitbox/hurtbox definitions, headless engine build scripts. Trained for
+  agentic tool calling; only ~3B params active per token, so fast at Q4.
+- **Ruled out: Qwen2.5-Coder-32B** (dense) — tested 2026-09-01 via
+  llama-server `--jinja`: 0/5 structured tool calls on `tool_choice=auto`;
+  emits raw JSON in `content` with an invented `<tools>` wrapper instead of
+  the `<tool_call>` format its own template defines, and even
+  `tool_choice=required` fails to parse. Usable for plain prompt→code
+  generation only, not as an agentic coder.
 - Alternatives considered: Qwen3-Coder-Next-80B-A3B (MoE, too large for
   concurrent residency with other stages), Qwen3-8B (lighter fallback).
 
 ### Text-to-Image / TTI (loads on-demand, ~12GB VRAM)
-- SDXL / Flux.1-dev — concept art, character reference sheets, textures,
-  environment art, UI mockups.
+- SDXL (default) / Flux.1-dev (stretch goal) — concept art, character
+  reference sheets, textures, environment art, UI mockups. Note: Titan RTX
+  is Turing (no FP8/BF16), so Flux's usual ~12GB fp8 path doesn't apply —
+  Flux needs GGUF/NF4 quants and will be slow; SDXL is the safe default.
 - Style consistency enforced via **IP-Adapter** (reference-image
   conditioning) or a project-specific **LoRA** trained once per project.
 
 ### Text/Image-to-3D (loads on-demand, ~12-16GB VRAM)
-- **Hunyuan3D-2.x** or **TRELLIS.2** (MIT license) — generates meshes +
+- **TRELLIS** (MIT — primary) or **Hunyuan3D-2.x** (Tencent Hunyuan
+  Community License, which **excludes the EU** — not safe for a Steam
+  release from NL) — generates meshes +
   PBR textures conditioned on both the TTI concept image and the text spec,
   ensuring visual match between 2D concept and 3D asset.
 
@@ -147,7 +158,7 @@ combat state machine, and produces a runnable build — no manual GUI steps.
 - Python 3.11+ (dispatcher/orchestration layer)
 - llama.cpp / Ollama / vLLM (LLM inference backends)
 - ComfyUI or diffusers (TTI pipeline)
-- Hunyuan3D-2.x or TRELLIS.2 inference environment
+- TRELLIS inference environment (Hunyuan3D-2.x only if license territory issue is resolved)
 - Meshy API key (rigging/animation)
 - Orpheus-FastAPI or equivalent (TTS serving)
 - SQLite (task queue persistence)
