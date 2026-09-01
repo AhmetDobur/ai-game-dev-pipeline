@@ -136,7 +136,7 @@ contention on this hardware.
 - `rig_animate` → Meshy API, auto-rig + preset/generated motion clips,
   exported as FBX
 - `audio` → Orpheus 3B, dialogue/announcer lines from LLM-written script
-- `code` → Qwen3-Coder-32B, combat state machine, hitbox/hurtbox logic,
+- `code` → Qwen3-Coder-30B-A3B, combat state machine, hitbox/hurtbox logic,
   input handling, headless engine build scripts
 
 ### Stage 4 — Validation
