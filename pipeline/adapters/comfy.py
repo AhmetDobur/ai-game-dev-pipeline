@@ -49,7 +49,7 @@ class ComfyClient:
         out_dir.mkdir(parents=True, exist_ok=True)
         saved = []
         for node_output in outputs.values():
-            for kind in ("images", "gltfs", "meshes", "files"):
+            for kind in ("images", "gltfs", "meshes", "files", "3d"):
                 for item in node_output.get(kind, []):
                     r = requests.get(f"{self.url}/view", params={
                         "filename": item["filename"],

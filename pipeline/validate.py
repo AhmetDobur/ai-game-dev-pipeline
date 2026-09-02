@@ -92,8 +92,15 @@ def _validate_code(paths: list[Path], godot_binary: str,
             return False, f"{p} missing or empty"
         if p.suffix == ".gd" and project_dir is not None:
             try:
+                # godot resolves a relative --script against res:// — hand it the
+                # project-relative path, falling back to absolute outside the project
+                try:
+                    script = "res://" + p.resolve().relative_to(
+                        project_dir.resolve()).as_posix()
+                except ValueError:
+                    script = str(p.resolve())
                 r = subprocess.run(
-                    [godot_binary, "--headless", "--check-only", "--script", str(p),
+                    [godot_binary, "--headless", "--check-only", "--script", script,
                      "--path", str(project_dir)],
                     capture_output=True, encoding="utf-8", errors="replace", timeout=120)
             except FileNotFoundError:
