@@ -1,4 +1,424 @@
 {
-  "_comment": "PLACEHOLDER — export your own from ComfyUI once the TRELLIS custom nodes are installed: build the graph in the ComfyUI editor, then 'Workflow > Export (API)'. Put {{prompt}} where the text conditioning goes and {{image}} where the concept image path goes, and save over this file. See README 'Install: TRELLIS'.",
-  "_expected_placeholders": ["{{prompt}}", "{{image}}"]
+ "1": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "{{image}}"
+  }
+ },
+ "2": {
+  "class_type": "CLIPVisionLoader",
+  "inputs": {
+   "clip_name": "dino_v3_vit_l.safetensors"
+  }
+ },
+ "3": {
+  "class_type": "Trellis2Conditioning",
+  "inputs": {
+   "clip_vision_model": [
+    "2",
+    0
+   ],
+   "image": [
+    "1",
+    0
+   ]
+  }
+ },
+ "4": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "trellis_2_bf16.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "5": {
+  "class_type": "CFGOverride",
+  "inputs": {
+   "cfg": 1.0,
+   "start_percent": 0.667,
+   "end_percent": 1.0,
+   "model": [
+    "4",
+    0
+   ]
+  }
+ },
+ "6": {
+  "class_type": "RescaleCFG",
+  "inputs": {
+   "multiplier": 0.7,
+   "model": [
+    "5",
+    0
+   ]
+  }
+ },
+ "7": {
+  "class_type": "ModelSamplingSD3",
+  "inputs": {
+   "shift": 5.0,
+   "model": [
+    "6",
+    0
+   ]
+  }
+ },
+ "8": {
+  "class_type": "CFGOverride",
+  "inputs": {
+   "cfg": 1.0,
+   "start_percent": 0.769,
+   "end_percent": 1.0,
+   "model": [
+    "4",
+    0
+   ]
+  }
+ },
+ "9": {
+  "class_type": "RescaleCFG",
+  "inputs": {
+   "multiplier": 0.5,
+   "model": [
+    "8",
+    0
+   ]
+  }
+ },
+ "10": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "trellis_2_shape_vae_bf16.safetensors"
+  }
+ },
+ "11": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "trellis_2_texture_vae_bf16.safetensors"
+  }
+ },
+ "12": {
+  "class_type": "EmptyTrellis2LatentStructure",
+  "inputs": {
+   "batch_size": 1
+  }
+ },
+ "13": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 56,
+   "steps": 12,
+   "cfg": 7.5,
+   "denoise": 1.0,
+   "model": [
+    "7",
+    0
+   ],
+   "sampler_name": "euler",
+   "scheduler": "normal",
+   "positive": [
+    "3",
+    0
+   ],
+   "negative": [
+    "3",
+    1
+   ],
+   "latent_image": [
+    "12",
+    0
+   ]
+  }
+ },
+ "14": {
+  "class_type": "VaeDecodeStructureTrellis2",
+  "inputs": {
+   "resolution": "32",
+   "samples": [
+    "13",
+    0
+   ],
+   "vae": [
+    "10",
+    0
+   ]
+  }
+ },
+ "15": {
+  "class_type": "Trellis2ShapeStage",
+  "inputs": {
+   "positive": [
+    "3",
+    0
+   ],
+   "negative": [
+    "3",
+    1
+   ],
+   "voxel": [
+    "14",
+    0
+   ]
+  }
+ },
+ "16": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 42,
+   "steps": 20,
+   "cfg": 7.5,
+   "denoise": 1.0,
+   "model": [
+    "9",
+    0
+   ],
+   "sampler_name": "euler",
+   "scheduler": "normal",
+   "positive": [
+    "15",
+    0
+   ],
+   "negative": [
+    "15",
+    1
+   ],
+   "latent_image": [
+    "15",
+    2
+   ]
+  }
+ },
+ "17": {
+  "class_type": "Trellis2UpsampleStage",
+  "inputs": {
+   "target_resolution": 1536,
+   "positive": [
+    "15",
+    0
+   ],
+   "negative": [
+    "15",
+    1
+   ],
+   "shape_latent": [
+    "16",
+    0
+   ],
+   "vae": [
+    "10",
+    0
+   ]
+  }
+ },
+ "18": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 42,
+   "steps": 12,
+   "cfg": 7.5,
+   "denoise": 1.0,
+   "model": [
+    "9",
+    0
+   ],
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "17",
+    0
+   ],
+   "negative": [
+    "17",
+    1
+   ],
+   "latent_image": [
+    "17",
+    2
+   ]
+  }
+ },
+ "19": {
+  "class_type": "VaeDecodeShapeTrellis",
+  "inputs": {
+   "samples": [
+    "18",
+    0
+   ],
+   "vae": [
+    "10",
+    0
+   ]
+  }
+ },
+ "20": {
+  "class_type": "Trellis2TextureStage",
+  "inputs": {
+   "positive": [
+    "17",
+    0
+   ],
+   "negative": [
+    "17",
+    1
+   ],
+   "shape_latent": [
+    "18",
+    0
+   ]
+  }
+ },
+ "21": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 43,
+   "steps": 12,
+   "cfg": 1.0,
+   "denoise": 1.0,
+   "model": [
+    "4",
+    0
+   ],
+   "sampler_name": "euler",
+   "scheduler": "normal",
+   "positive": [
+    "20",
+    0
+   ],
+   "negative": [
+    "20",
+    1
+   ],
+   "latent_image": [
+    "20",
+    2
+   ]
+  }
+ },
+ "22": {
+  "class_type": "VaeDecodeTextureTrellis",
+  "inputs": {
+   "samples": [
+    "21",
+    0
+   ],
+   "vae": [
+    "11",
+    0
+   ],
+   "shape_subdivides": [
+    "19",
+    1
+   ]
+  }
+ },
+ "23": {
+  "class_type": "RemeshMesh",
+  "inputs": {
+   "resolution": 768,
+   "band": 1.0,
+   "project_back": 0.0,
+   "fix_poles": false,
+   "smooth_iters": 0,
+   "drop_small_components": 0.01,
+   "precluster_max_verts": 20000000,
+   "mesh": [
+    "19",
+    0
+   ],
+   "sign_mode": "udf"
+  }
+ },
+ "24": {
+  "class_type": "DecimateMesh",
+  "inputs": {
+   "target_face_count": 40000,
+   "mesh": [
+    "23",
+    0
+   ],
+   "placement_mode": "midpoint"
+  }
+ },
+ "25": {
+  "class_type": "MeshSmoothNormals",
+  "inputs": {
+   "crease_angle": 180,
+   "mesh": [
+    "24",
+    0
+   ]
+  }
+ },
+ "26": {
+  "class_type": "UnwrapMesh",
+  "inputs": {
+   "segmenter": "pec",
+   "resolution": 2048,
+   "padding": 1,
+   "weld_distance": 0.0002,
+   "mesh": [
+    "25",
+    0
+   ]
+  }
+ },
+ "27": {
+  "class_type": "BakeTextureFromVoxel",
+  "inputs": {
+   "texture_size": 2048,
+   "mesh": [
+    "26",
+    0
+   ],
+   "voxel_colors": [
+    "22",
+    0
+   ],
+   "reference_mesh": [
+    "19",
+    0
+   ]
+  }
+ },
+ "28": {
+  "class_type": "ApplyTextureToMesh",
+  "inputs": {
+   "mesh": [
+    "26",
+    0
+   ],
+   "base_color": [
+    "27",
+    0
+   ],
+   "metallic": [
+    "27",
+    1
+   ],
+   "roughness": [
+    "27",
+    2
+   ]
+  }
+ },
+ "29": {
+  "class_type": "MeshSmoothNormals",
+  "inputs": {
+   "crease_angle": 180,
+   "mesh": [
+    "28",
+    0
+   ]
+  }
+ },
+ "30": {
+  "class_type": "SaveGLB",
+  "inputs": {
+   "filename_prefix": "pipeline3d",
+   "mesh": [
+    "29",
+    0
+   ]
+  }
+ }
 }
