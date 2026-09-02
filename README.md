@@ -309,6 +309,31 @@ every task, and `python run.py status`) show a live estimate that is
   fake-precise number, and it is labeled `[history]`, `[mixed]` or
   `[defaults]` so you know what it is based on.
 
+## Autostart (start devving at boot, lose nothing)
+
+Register the pipeline as a logon Scheduled Task so it comes up automatically
+every time you log in and immediately continues any run interrupted by the last
+shutdown — no clicking, no lost time:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
+```
+
+It runs windowless (`pythonw`), has no execution time limit, and restarts
+itself if it ever dies — service-like, without admin rights. The GUI lands on
+http://127.0.0.1:8500. Start it immediately without logging out:
+
+```powershell
+Start-ScheduledTask -TaskName AIGameDevPipeline
+```
+
+Remove it with `scripts\uninstall_autostart.ps1`.
+
+Scope note: autostart **resumes existing unfinished runs** — it does not invent
+new games. A new game still starts from an `instruction.md` upload; once
+started, nothing short of deleting the workspace stops it from finishing across
+reboots.
+
 ## Configuration reference
 
 All knobs live in `pipeline.toml` (see `pipeline.toml.example`; defaults in
