@@ -23,7 +23,7 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
     if kind == "design_3d":
         return _validate_files(output_paths, MESH_EXTS, MIN_MESH_BYTES, "mesh")
     if kind == "rig_animate":
-        return _validate_files(output_paths, {".fbx", ".glb"}, MIN_MESH_BYTES, "rigged model")
+        return _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES, "animated model")
     if kind == "audio":
         return _validate_audio(output_paths)
     if kind == "assemble":

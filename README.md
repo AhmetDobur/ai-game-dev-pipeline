@@ -10,7 +10,7 @@ original fighting-game demo, but nothing about the game is hardcoded: the game
 arrives as an instruction file through the GUI, gets decomposed into a typed
 task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-- **Version:** 0.5.0 (semver; git tags `vX.Y.Z`)
+- **Version:** 0.6.0 (semver; git tags `vX.Y.Z`)
 - **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
 - **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
   writes is reviewable plain text; headless import/export)
@@ -33,11 +33,12 @@ instruction.md ──▶ GUI (FastAPI, localhost:8500)
                        ▼
               scheduler.py — WAVE SCHEDULER
       ┌────────────────┼───────────────────────────────┐
-      │ GPU waves (one model loaded at a time)         │ async lane (no VRAM)
-      │  coder → sdxl → trellis → tts → (repeat)       │  rig_animate → Meshy API
-      │  each wave drains ALL ready tasks of its type, │ local lane (CPU)
-      │  validates IN-WAVE so retries reuse the        │  assemble → godot --headless
-      │  already-loaded model                          │
+      │ GPU waves (one model loaded at a time)         │ local lane (CPU)
+      │  coder → sdxl → trellis → motion → tts → (…)   │  assemble → godot --headless
+      │  each wave drains ALL ready tasks of its type, │
+      │  validates IN-WAVE so retries reuse the        │
+      │  already-loaded model. motion = Blender rig+   │
+      │  animate, all local.                           │
       └────────────────┼───────────────────────────────┘
                        ▼
               validate.py (objective checks per branch)
@@ -51,7 +52,8 @@ Only one large model fits in 24GB, and model loads cost minutes. The scheduler
 therefore never walks the queue in plain dependency order. Instead:
 
 1. **Waves**: tasks are grouped by the model that serves them
-   (`code`→coder LLM, `design_2d`→SDXL, `design_3d`→TRELLIS, `audio`→TTS).
+   (`code`→coder LLM, `design_2d`→SDXL, `design_3d`→TRELLIS,
+   `rig_animate`→Blender motion stage, `audio`→TTS).
    A wave loads its model once (`wave_setup`), drains **every** ready task of
    that type — including tasks whose dependencies complete *during* the wave —
    then unloads (`wave_teardown`). Model loads per cycle drop from
@@ -61,11 +63,11 @@ therefore never walks the queue in plain dependency order. Instead:
    to `max_attempts` times *inside the wave* (the executor receives
    `last_error` so the retry prompt says what was wrong) instead of waiting a
    full cycle and paying a reload.
-3. **Async lane**: `rig_animate` is a network-bound Meshy API call — it runs
-   in background threads *alongside* whatever GPU wave is active.
-4. **Local lane**: `assemble` is a CPU-only `godot --headless` subprocess and
-   runs between waves.
-5. The **router LLM stays resident** the whole run (small footprint); the
+3. **Everything is serial on one GPU**: the motion stage (Blender + UniRig/
+   Kimodo) is GPU-bound like the rest, so it runs as its own wave, not a
+   parallel lane. Only `assemble` (a CPU-only `godot --headless` subprocess)
+   runs off the GPU timeline, between waves.
+4. The **router LLM stays resident** the whole run (small footprint); the
    coder LLM starts/stops around its own wave; ComfyUI is asked to free VRAM
    (`POST /free`) after image/mesh waves.
 
@@ -95,7 +97,7 @@ instruction file:
 | `code` | `file`, `description` | coder LLM → writes into `game/` | `godot --check-only` per `.gd` file |
 | `design_2d` | `prompt`, `purpose` | ComfyUI SDXL workflow | file type + size floor |
 | `design_3d` | `prompt`, `concept_from` | ComfyUI TRELLIS workflow | mesh file type + size floor |
-| `rig_animate` | `mesh_from`, `animations[]` | Meshy REST API | FBX exists + size floor |
+| `rig_animate` | `mesh_from`, `body_plan`, `animations[]`, `extras[]` | Blender headless (UniRig/Kimodo/CMU + procedural) | animated `.glb` exists + size floor |
 | `audio` | `text`, `voice` | Orpheus-FastAPI | WAV parses, duration ≥ 0.2s |
 | `assemble` | `export_preset` | `godot --headless --export-release` | build artifact ≥ 1MB |
 
@@ -132,28 +134,81 @@ in-wave retry feeds it back to the coder. Timing is graded by arithmetic,
 never by opinion. Tuning the game's feel afterwards means editing a JSON
 table and re-running one wave — not reopening code.
 
+### Motion (rig + animate) — fully local, arbitrary creatures
+
+The old cloud rig/animate step (Meshy) is **gone** — nothing about a character
+leaves the box. `rig_animate` runs headless Blender on
+`templates/blender_motion.py`, which always produces one animated `.glb` per
+clip **from Blender alone** (the procedural floor) and folds in optional local
+tools when configured:
+
+- **UniRig** (MIT) — auto-rigs *any* topology: humans, animals, a
+  dragon-amoeba, inorganic shapes. Falls back to a procedural armature fitted
+  to the mesh's bounding box when not installed.
+- **Kimodo** (NVIDIA Open Model License, commercial-OK, trained on NVIDIA's own
+  mocap — not AMASS) — text→motion for **humanoid** clips.
+- **CMU mocap** (free for any use) — exact-match clips reused verbatim, checked
+  first; also the placeholder net so nothing stalls waiting on a generated clip.
+
+The split, decided per character by the router's `body_plan`:
+
+| body_plan | motion source |
+|---|---|
+| `humanoid` | CMU exact match → else Kimodo generates → else procedural |
+| `nonhumanoid` | procedural (physics/gait keyframes) — no motion *model* can animate a novel body plan |
+
+`extras[]` (`tail`, `jaw`, `wings`, `cloak`) always get procedural secondary
+motion on top — a humanoid body with a tail (Mileena-style) is mocap body +
+procedural tail + scripted jaw, exactly how AAA does it. **Worst case, with zero
+AI tools installed, every creature still ships a moving model** via the
+procedural path.
+
+> The bpy script runs inside Blender on the CUDA box; the pipeline's unit tests
+> mock the Blender subprocess (as they do godot/ComfyUI/TTS).
+
+### Patching (keep working on a shipped game)
+
+A finished game isn't frozen — `patch` applies a *delta* instruction to it and
+produces a **new revision** (v1 → v2 → v3), reusing everything the change
+doesn't touch. Mechanism:
+
+1. The parent revision's whole workspace (game + artifacts) is snapshotted into
+   the new revision, and its task graph is copied in as `done`.
+2. The router decomposes the delta against a **manifest** of what the game
+   already contains, emitting only `MODIFY <artifact>` / `ADD <artifact>` ops.
+3. A **dependency-aware invalidation walk** marks the changed tasks and every
+   transitive dependent stale; the single `assemble` task is rewired to depend
+   on everything so the build is always regenerated last.
+4. The normal scheduler then re-runs **exactly** the stale tasks and reuses the
+   rest. Change one line of code → nothing else loads. Change a boss mesh →
+   only its rig + motion re-run, not the whole game.
+
+The whole patch graph is inserted in one atomic transaction, so a crash
+mid-build leaves a clean re-run, and patches inherit resume/ETA for free.
+
 ### Repo layout
 
 ```
 pipeline/
   config.py        pipeline.toml loader (leaf module, imports nothing)
-  db.py            SQLite queue: runs, tasks, durations, reclaim, ready-set
-  decompose.py     router prompt → validated task list → queue
-  scheduler.py     wave scheduler + async/local lanes + in-wave retry
+  db.py            SQLite queue: runs, tasks, durations, reclaim, ready-set, revisions
+  decompose.py     router prompt → validated task list (fresh + patch delta) → queue
+  patch.py         revisions: snapshot + reuse + dependency-aware invalidation walk
+  scheduler.py     wave scheduler + in-wave retry
   executors.py     production executors (one per task type)
-  orchestrate.py   wires config+adapters+scheduler for one run
+  orchestrate.py   wires config+adapters+scheduler for one run (fresh or patch)
   validate.py      objective per-branch validators
   eta.py           learned wave-aware ETA (p50–p90 band from run history)
-  watch.py         inbox auto-start: claim-by-rename, sibling refs, reconcile
+  watch.py         inbox auto-start: claim-by-rename, sibling refs, reconcile, patch marker
   livelog.py       in-memory live output buffer (model tokens, per run)
-  gui.py           FastAPI page: live output panel, task table, ETA, resume + watch
+  gui.py           FastAPI page: live output panel, task table, ETA, resume + watch + patch
   adapters/
     llm.py         llama-server lifecycle + chat + Qwen2.5 <tools> shim
     comfy.py       ComfyUI /prompt → poll /history → download outputs
-    meshy.py       rig + animate + FBX download
+    motion.py      Blender headless rig+animate → animated .glb (local, no cloud)
     tts.py         Orpheus /v1/audio/speech
-run.py             CLI: gui | run <instruction.md> [--ref img] | status
-templates/         frame_data_test.gd — the pipeline's own headless timing grader
+run.py             CLI: gui | run <md> [--ref img] | patch <parent> <md> | status | resume | watch
+templates/         frame_data_test.gd (headless timing grader), blender_motion.py (rig+animate)
 workflows/         ComfyUI API-format workflow JSONs ({{prompt}} placeholders)
 pipeline.toml.example
 requirements.txt   pinned exact versions (core: fastapi, uvicorn, requests, python-multipart)
@@ -169,7 +224,6 @@ scripts/           live-server integration checks (need a running model)
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt        # Windows
 cp pipeline.toml.example pipeline.toml               # fill in your paths
-set MESHY_API_KEY=msy_xxx                            # or setx for persistence
 .venv/Scripts/python run.py gui                      # http://127.0.0.1:8500
 ```
 
@@ -179,6 +233,7 @@ Upload an `instruction.md` (and optional reference images) in the GUI, press
 ```bash
 python run.py run my-game/instruction.md --ref my-game/style.png
 python run.py status
+python run.py patch <run_id> tweaks.md            # apply a delta → new revision
 ```
 
 Run tests (no GPU needed):
@@ -258,13 +313,19 @@ The full generated Godot project — every script, image, mesh, and audio file �
 is in `workspace/runs/<run_id>/game/`, so you can open it in the Godot editor
 and keep working by hand.
 
-### 5. Tune the feel
+### 5. Tune the feel — or patch it
 
 If a move feels off, edit its numbers in the instruction's frame-data table and
 re-run — the combat wave re-grades against the new values. No code editing
-needed for timing. For animation quality (the one thing generation can't nail),
-open the `game/` project and retarget a mocap animation pack onto the rigged
-skeletons.
+needed for timing.
+
+For anything bigger — "add a second boss", "make the jump higher", "swap the
+arena" — write a short delta `.md` and `patch` the game. It becomes a new
+revision that reuses everything untouched and re-runs only what changed
+(`python run.py patch <run_id> delta.md`, the **patch this game** button in the
+GUI, or drop a `.md` whose first line is `patch: <run_id>` into the inbox).
+Higher-quality humanoid motion comes from installing Kimodo/CMU (see config);
+non-humanoid motion is procedural by design.
 
 ### If something fails
 
@@ -301,20 +362,19 @@ do not run it manually during a pipeline run.
 | Role | Model | File | VRAM |
 |---|---|---|---|
 | Router (resident) | DeepSeek-R1-Distill-Qwen-7B | `Q4_K_M` GGUF | ~4GB |
-| Coder (wave) | Qwen3-Coder-30B-A3B-Instruct | `Q4_K_M` GGUF | ~18GB |
+| Coder (wave) | Qwen2.5-Coder-32B-Instruct (dense) | `Q4_K_M` GGUF | ~19GB |
 
 Get them from Hugging Face (`bartowski` or `unsloth` GGUF repos). Put paths in
 `pipeline.toml` under `[llm]`.
 
-**Coder fallback — Qwen2.5-Coder-32B (dense):** speaks a non-standard
-tool-call dialect. Measured 2026-09-01 on llama-server `--jinja`: 0/5 native
-structured `tool_calls` (it ignores the hermes `<tool_call>` format its own
-chat template declares and invents a `<tools>` wrapper), but 5/5 with the
-`<tools>` few-shot system prompt + regex shim that ships in
-`pipeline/adapters/llm.py` (`TOOLS_SHIM_SYSTEM`, `parse_tool_call`). Same
-model scored 13/14 on a hard concurrency benchmark where the 80B MoE
-deadlocked at 0/14 — usable, but only behind the shim. The 30B-A3B MoE needs
-no shim and stays primary.
+**Why the dense 32B needs no shim here:** Qwen2.5-Coder-32B speaks a
+non-standard *tool-call* dialect (measured 2026-09-01: 0/5 native `tool_calls`,
+5/5 behind the `<tools>` few-shot shim in `pipeline/adapters/llm.py`). But this
+pipeline's coder never makes tool calls — it is asked for a single fenced code
+block (`CODE_PROMPT` → `_extract_block`), so the tool-call weakness does not
+apply to its job. The same model scored 13/14 on a hard concurrency benchmark
+where the 80B MoE deadlocked at 0/14. The `<tools>` shim stays in `llm.py` for
+any future tool-calling use; it is not on the coder path.
 
 ### 4. ComfyUI (SDXL + TRELLIS)
 
@@ -356,10 +416,20 @@ plus **export templates** (Editor → Manager → Export Templates, or the
 `paths.godot`. In the generated project, the assemble step expects an export
 preset named in the task spec (default `"Windows Desktop"`).
 
-### 7. Meshy
+### 7. Blender + motion tools (rig + animate, all local)
 
-Create an API key at <https://www.meshy.ai> → set the `MESHY_API_KEY`
-environment variable. Network-bound; runs concurrently with GPU waves.
+Install **Blender 4.x** and set `motion.blender` to its binary. That alone is
+enough — the procedural floor rigs and animates any mesh with Blender only.
+Optional local quality boosters, each with a graceful fallback:
+
+- **UniRig** (MIT) — clone it, point `motion.unirig` at its dir for
+  auto-rigging arbitrary shapes. No cloud, no key.
+- **Kimodo** (NVIDIA Open Model License) — serve it locally and set
+  `motion.kimodo_url` for humanoid text→motion.
+- **CMU mocap BVH** — download the library, set `motion.cmu_dir` for
+  exact-match clips.
+
+No API key, no account, nothing leaves the machine.
 
 ---
 
@@ -459,7 +529,7 @@ All knobs live in `pipeline.toml` (see `pipeline.toml.example`; defaults in
 | `llm` | `load_timeout_s`, `request_timeout_s` | generous by design — a slow local model must never be cut off mid-thought |
 | `comfy` | `url`, `sdxl_workflow`, `trellis_workflow`, `timeout_s` | ComfyUI |
 | `tts` | `url`, `timeout_s` | Orpheus endpoint |
-| `meshy` | `api_key_env`, `poll_interval_s`, `timeout_s` | Meshy REST |
+| `motion` | `blender`, `script`, `cmu_dir`, `unirig`, `kimodo_url`, `timeout_s` | local rig+animate (all optional except `blender`) |
 | `scheduler` | `max_attempts` | in-wave retries per task |
 | `scheduler` | `wave_order` | GPU wave sequence per cycle |
 | `gui` | `host`, `port` | GUI bind (localhost only by default) |
@@ -474,9 +544,13 @@ All knobs live in `pipeline.toml` (see `pipeline.toml.example`; defaults in
 
 ## Honest limitations
 
-- Visual ceiling is set by the **generated assets** (TRELLIS meshes, Meshy
-  auto-rigs ≈ solid stylized game props, not AAA hero characters) — not by
-  Godot. Expect "good-looking stylized 3D", not photoreal AAA.
+- Visual ceiling is set by the **generated assets** (TRELLIS meshes + auto-rigs
+  ≈ solid stylized game props, not AAA hero characters) — not by Godot. Expect
+  "good-looking stylized 3D", not photoreal AAA.
+- **Motion quality is split by body plan**: humanoids can reach real
+  mocap/generated quality (CMU/Kimodo); non-humanoid creatures get procedural
+  motion — it moves anything, but it won't match hand-authored AAA polish. No
+  model, local or cloud, generates believable motion for a novel body plan.
 - Combat feel is generated, not hand-tuned: rough functional demo first.
 - Style consistency across 2D→3D depends on doing a style-lock (IP-Adapter or
   project LoRA) in the SDXL workflow; skipping it produces mismatched assets.

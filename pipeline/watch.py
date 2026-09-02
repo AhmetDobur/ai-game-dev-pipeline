@@ -10,12 +10,18 @@ created.
 The actual execution goes through the same `execute_run` + `_run_lock` path as
 the GUI, so watched runs, GUI runs and resumes all serialize onto the one GPU.
 """
+import re
 import threading
 import time
 from pathlib import Path
 
 from . import db
 from .orchestrate import execute_run, start_run
+from .patch import start_patch
+
+# first line "patch: <run_id>" (optionally in an HTML comment) makes a dropped .md
+# a patch of that game instead of a new game
+_PATCH_MARKER = re.compile(r"(?:<!--\s*)?patch:?\s+([0-9a-f]{12})", re.I)
 
 
 def _dirs(cfg: dict) -> tuple[Path, Path]:
@@ -48,10 +54,28 @@ def _claim_and_start(cfg: dict, conn, md: Path) -> str | None:
             ref_dests.append(str(rd))
         except OSError:
             pass
-    run_id = start_run(cfg, conn, dest, ref_dests)
-    print(f"[watch] started run {run_id} from {md.name}", flush=True)
+    parent = _patch_parent(dest)
+    if parent:
+        run_id = start_patch(cfg, conn, parent, dest, ref_dests)
+        print(f"[watch] started patch run {run_id} of {parent} from {md.name}", flush=True)
+    else:
+        run_id = start_run(cfg, conn, dest, ref_dests)
+        print(f"[watch] started run {run_id} from {md.name}", flush=True)
     _execute(cfg, run_id)
     return run_id
+
+
+def _patch_parent(md: Path) -> str | None:
+    """A dropped instruction whose first non-blank line is `patch: <run_id>` targets
+    that game as a new revision instead of starting a fresh game."""
+    try:
+        for line in md.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip():
+                m = _PATCH_MARKER.match(line.strip())
+                return m.group(1) if m else None
+    except OSError:
+        pass
+    return None
 
 
 def _execute(cfg: dict, run_id: str) -> None:
@@ -77,7 +101,15 @@ def reconcile(cfg: dict, conn) -> int:
             continue
         if f.resolve() in referenced:
             continue
-        run_id = start_run(cfg, conn, f, [])
+        try:
+            parent = _patch_parent(f)
+            run_id = (start_patch(cfg, conn, parent, f, []) if parent
+                      else start_run(cfg, conn, f, []))
+        except Exception as e:
+            # a bad file (e.g. patch of a nonexistent parent) must not wedge
+            # startup — it would re-raise here on every boot otherwise
+            print(f"[watch] cannot reconcile {f.name}: {e}", flush=True)
+            continue
         print(f"[watch] reconciled orphaned {f.name} -> run {run_id}", flush=True)
         _execute(cfg, run_id)
         recovered += 1

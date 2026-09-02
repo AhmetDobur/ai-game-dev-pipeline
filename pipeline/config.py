@@ -15,9 +15,8 @@ DEFAULTS: dict = {
     "llm": {
         "router_gguf": "",                   # DeepSeek-R1-Distill-Qwen-7B Q4_K_M
         "router_port": 8090,
-        "coder_gguf": "",                    # Qwen3-Coder-30B-A3B Q4_K_M
+        "coder_gguf": "",                    # dense Qwen2.5-Coder-32B-Instruct Q4_K_M
         "coder_port": 8091,
-        "coder_needs_tools_shim": False,     # True for Qwen2.5-Coder fallback
         "ctx_size": 32768,
         "temperature": 0.6,
         "max_tokens": 4096,
@@ -34,15 +33,17 @@ DEFAULTS: dict = {
         "url": "http://127.0.0.1:5005",      # Orpheus-FastAPI
         "timeout_s": 300,
     },
-    "meshy": {
-        "api_key_env": "MESHY_API_KEY",
-        "url": "https://api.meshy.ai",
-        "poll_interval_s": 15,
+    "motion": {                              # local rig+animate — Blender headless, no cloud
+        "blender": "blender",                # Blender 4.x binary on PATH or absolute
+        "script": "templates/blender_motion.py",
+        "cmu_dir": "",                       # CMU BVH mocap library (optional; exact-match clips)
+        "unirig": "",                        # UniRig checkpoint dir (optional auto-rigger)
+        "kimodo_url": "",                    # Kimodo local endpoint for text->motion (optional)
         "timeout_s": 1800,
     },
     "scheduler": {
         "max_attempts": 3,                   # in-wave retries per task
-        "wave_order": ["coder", "sdxl", "trellis", "tts"],
+        "wave_order": ["coder", "sdxl", "trellis", "motion", "tts"],
     },
     "watch": {
         "dir": "inbox",                      # drop instruction.md files here to auto-start

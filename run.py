@@ -16,6 +16,11 @@ def main():
     p_run.add_argument("instruction", type=Path)
     p_run.add_argument("--ref", action="append", default=[], help="reference image path")
 
+    p_patch = sub.add_parser("patch", help="apply a delta instruction to a finished game (new revision)")
+    p_patch.add_argument("parent_run_id")
+    p_patch.add_argument("instruction", type=Path, help="delta instruction .md")
+    p_patch.add_argument("--ref", action="append", default=[], help="reference image path")
+
     p_status = sub.add_parser("status", help="show runs / tasks / ETA")
     p_status.add_argument("run_id", nargs="?")
 
@@ -38,6 +43,15 @@ def main():
         print(f"run {run_id}")
         execute_run(cfg, conn, run_id)
         print(f"run {run_id}: {db.get_run(conn, run_id)['status']}")
+    elif args.cmd == "patch":
+        from pipeline import livelog
+        from pipeline.orchestrate import execute_run
+        from pipeline.patch import start_patch
+        livelog.tee_stdout = True
+        run_id = start_patch(cfg, conn, args.parent_run_id, args.instruction, args.ref)
+        print(f"patch run {run_id} (revision of {args.parent_run_id})")
+        execute_run(cfg, conn, run_id)
+        print(f"patch {run_id}: {db.get_run(conn, run_id)['status']}")
     elif args.cmd == "resume":
         from pipeline.orchestrate import resume_incomplete_runs
         resumed = resume_incomplete_runs(cfg, conn)

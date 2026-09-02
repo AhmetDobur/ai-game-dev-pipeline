@@ -5,8 +5,9 @@ from pathlib import Path
 from . import db
 from .adapters.comfy import ComfyClient
 from .adapters.llm import LlamaServer
-from .decompose import decompose, insert_tasks
+from .decompose import decompose, decompose_patch, insert_tasks
 from .executors import build_executors
+from .patch import build_patch_graph, manifest, prepare_workspace
 from .scheduler import Scheduler
 
 
@@ -14,6 +15,23 @@ def start_run(cfg: dict, conn, instruction_path: Path,
               reference_images: list[str] | None = None) -> str:
     run_id = db.create_run(conn, str(instruction_path), reference_images or [])
     return run_id
+
+
+def _plan_patch(cfg, conn, run_id, parent_id, instruction, refs, router, livelog) -> None:
+    """Snapshot the parent revision, decompose the delta, materialize the patch
+    graph atomically. Selective re-run then falls out of the normal scheduler:
+    only the stale tasks are pending, the rest carry their parent's outputs."""
+    livelog.start(run_id, f"planning patch of {parent_id}")
+    prepare_workspace(cfg, run_id, parent_id)
+    parent_rows = db.list_tasks(conn, parent_id)
+    delta = decompose_patch(router, manifest(parent_rows), instruction, refs,
+                            cfg["llm"]["temperature"], cfg["llm"]["max_tokens"],
+                            on_token=livelog.token_sink(run_id))
+    rows, stale = build_patch_graph(parent_rows, delta, parent_id, run_id)
+    db.add_tasks_full(conn, run_id, rows)
+    import json
+    print(json.dumps({"patch": run_id, "of": parent_id,
+                      "tasks": len(rows), "re_running": len(stale)}))
 
 
 def execute_run(cfg: dict, conn, run_id: str) -> None:
@@ -33,19 +51,23 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
         comfy = ComfyClient(cfg["comfy"]["url"], cfg["comfy"]["timeout_s"])
 
         # resume support: a run that already has tasks was interrupted mid-flight —
-        # skip decomposition and let the scheduler reclaim + continue. Decompose
-        # inserts are atomic (db.add_tasks), so "has tasks" means "has ALL tasks".
+        # skip planning and let the scheduler reclaim + continue. Both the fresh
+        # (db.add_tasks) and patch (db.add_tasks_full) inserts are atomic, so
+        # "has tasks" means "has ALL tasks".
+        import json
+        from . import livelog
+        router.start()  # resident for the whole run
         if not db.list_tasks(conn, run_id):
-            router.start()  # resident for the whole run
-            import json
-            from . import livelog
-            livelog.start(run_id, "planning tasks from instruction.md")
-            tasks = decompose(router, instruction, json.loads(run["reference_images"]),
-                              cfg["llm"]["temperature"], cfg["llm"]["max_tokens"],
-                              on_token=livelog.token_sink(run_id))
-            insert_tasks(conn, run_id, tasks)
-        else:
-            router.start()
+            refs = json.loads(run["reference_images"])
+            if run["parent_id"]:
+                _plan_patch(cfg, conn, run_id, run["parent_id"], instruction, refs,
+                            router, livelog)
+            else:
+                livelog.start(run_id, "planning tasks from instruction.md")
+                tasks = decompose(router, instruction, refs,
+                                  cfg["llm"]["temperature"], cfg["llm"]["max_tokens"],
+                                  on_token=livelog.token_sink(run_id))
+                insert_tasks(conn, run_id, tasks)
 
         scheduler = Scheduler(
             conn, run_id,

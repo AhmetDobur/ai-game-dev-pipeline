@@ -60,6 +60,21 @@ def test_second_poll_does_not_restart_same_file(tmp_path, monkeypatch):
     assert watch.poll_once(cfg, conn) == []     # nothing left to claim
 
 
+def test_dropped_patch_md_starts_a_patch_run(tmp_path, monkeypatch):
+    _no_execute(monkeypatch)
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg["paths"]["db"])
+    parent = db.create_run(conn, "orig.md")  # a finished game to patch
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "buff.md").write_text(f"patch: {parent}\nmake the jump higher",
+                                   encoding="utf-8")
+
+    run_id = watch.poll_once(cfg, conn)[0]
+    child = db.get_run(conn, run_id)
+    assert child["parent_id"] == parent and child["revision"] == 2
+
+
 def test_reconcile_recovers_orphaned_claim(tmp_path, monkeypatch):
     """File moved to started/ but its run was never created (crash mid-claim)."""
     _no_execute(monkeypatch)

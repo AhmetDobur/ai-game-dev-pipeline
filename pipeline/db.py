@@ -1,8 +1,8 @@
 """SQLite task queue. stdlib only, WAL mode.
 
-All access goes through a module-level lock: GUI thread, scheduler thread and
-rig_animate lane threads may share one connection, and sqlite3's commit path is
-not atomic across threads (empirically raced during review).
+All access goes through a module-level lock: the GUI's background-run threads,
+the watch thread and the scheduler thread may share one connection, and sqlite3's
+commit path is not atomic across threads (empirically raced during review).
 """
 # ponytail: one global lock serializes all DB access; per-connection locks if throughput matters
 import functools
@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS runs (
     reference_images TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT NOT NULL DEFAULT '',
+    parent_id TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -64,15 +66,32 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")  # survive power loss, throughput is irrelevant here
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
 
 
 @_locked
-def create_run(conn, instruction_path: str, reference_images: list[str] | None = None) -> str:
+def _migrate(conn) -> None:
+    """Add patch/revision columns to runs tables created before they existed.
+    Locked so two threads opening a pre-0.6 DB at once can't both ALTER the same
+    column (the loser would raise 'duplicate column name')."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+    if "parent_id" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''")
+    if "revision" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+    conn.commit()
+
+
+@_locked
+def create_run(conn, instruction_path: str, reference_images: list[str] | None = None,
+               parent_id: str = "", revision: int = 1) -> str:
     run_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO runs (id, instruction_path, reference_images, created_at) VALUES (?,?,?,?)",
-        (run_id, instruction_path, json.dumps(reference_images or []), time.time()),
+        "INSERT INTO runs (id, instruction_path, reference_images, parent_id, revision,"
+        " created_at) VALUES (?,?,?,?,?,?)",
+        (run_id, instruction_path, json.dumps(reference_images or []),
+         parent_id, revision, time.time()),
     )
     conn.commit()
     return run_id
@@ -107,12 +126,14 @@ def add_task(conn, run_id: str, type_: str, spec: dict,
 
 @_locked
 def update_task(conn, task_id: str, **fields) -> None:
-    allowed = {"status", "attempts", "output_path", "error", "spec"}
+    allowed = {"status", "attempts", "output_path", "error", "spec", "depends_on"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"cannot update fields {bad}")
-    if "spec" in fields and isinstance(fields["spec"], dict):
+    if isinstance(fields.get("spec"), dict):
         fields["spec"] = json.dumps(fields["spec"])
+    if isinstance(fields.get("depends_on"), list):
+        fields["depends_on"] = json.dumps(fields["depends_on"])
     sets = ", ".join(f"{k}=?" for k in fields)
     conn.execute(
         f"UPDATE tasks SET {sets}, updated_at=? WHERE id=?",
@@ -179,6 +200,26 @@ def add_tasks(conn, run_id: str, rows: list[tuple]) -> None:
             " VALUES (?,?,?,?,?,?,?)",
             [(tid, run_id, type_, json.dumps(spec), json.dumps(deps), now, now)
              for tid, type_, spec, deps in rows])
+
+
+@_locked
+def add_tasks_full(conn, run_id: str, rows: list[dict]) -> None:
+    """Atomic insert of complete task rows (status/attempts/output/error carried in).
+    Used to materialize a patch's whole task graph in one transaction, so a crash
+    mid-build leaves zero tasks (a clean re-run) rather than a half-built graph."""
+    for r in rows:
+        if r["type"] not in TASK_TYPES:
+            raise ValueError(f"unknown task type {r['type']!r}, expected one of {TASK_TYPES}")
+    now = time.time()
+    with conn:  # one transaction
+        conn.executemany(
+            "INSERT INTO tasks (id, run_id, type, spec, depends_on, status, attempts,"
+            " output_path, error, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(r["id"], run_id, r["type"], json.dumps(r["spec"]),
+              json.dumps(r.get("depends_on", [])), r.get("status", "pending"),
+              r.get("attempts", 0), r.get("output_path", ""), r.get("error", ""), now, now)
+             for r in rows])
 
 
 @_locked

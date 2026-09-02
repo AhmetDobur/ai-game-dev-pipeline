@@ -83,7 +83,11 @@ async function refresh(){
   let html='';
   for(const r of runs){
     const tasks=await (await fetch('/api/runs/'+r.id+'/tasks')).json();
-    html+=`<h2>run ${r.id} — ${r.status}${r.error?' — '+r.error:''}</h2>`;
+    const rev=r.revision>1?` <small>(rev ${r.revision} of ${r.parent_id})</small>`:'';
+    html+=`<h2>run ${r.id}${rev} — ${r.status}${r.error?' — '+r.error:''}</h2>`;
+    if(r.status==='done'||r.status==='failed')
+      html+=`<div class=patch><button onclick="patchGame('${r.id}')">patch this game</button>`+
+        `<input type=file id="pf_${r.id}" accept=".md,.txt" style="display:none"></div>`;
     if(r.status==='in_progress'||r.status==='pending'){
       const e=await (await fetch('/api/runs/'+r.id+'/eta')).json();
       const pct=e.total_tasks?Math.round(100*e.done_tasks/e.total_tasks):0;
@@ -101,6 +105,16 @@ async function refresh(){
 }
 function fmt(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';
   return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
+function patchGame(id){
+  const inp=document.getElementById('pf_'+id);
+  inp.onchange=async()=>{
+    if(!inp.files[0])return;
+    const fd=new FormData();fd.append('instruction',inp.files[0]);
+    const res=await fetch('/api/runs/'+id+'/patch',{method:'POST',body:fd});
+    if(!res.ok)alert(await res.text());else refresh();
+  };
+  inp.click();
+}
 async function pollLive(){
   try{
     const l=await (await fetch('/api/live')).json();
@@ -140,6 +154,26 @@ async def create_run(instruction: UploadFile = File(...),
     run_id = start_run(cfg, conn(), inst_path, ref_paths)
     threading.Thread(target=_run_in_background, args=(run_id,), daemon=True).start()
     return {"run_id": run_id}
+
+
+@app.post("/api/runs/{parent_id}/patch")
+async def patch_run(parent_id: str, instruction: UploadFile = File(...),
+                    refs: list[UploadFile] = File(default=[])):
+    from .patch import start_patch
+    uploads = Path(cfg["paths"]["workspace"]) / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    inst_path = uploads / (Path(instruction.filename or "patch.md").name or "patch.md")
+    inst_path.write_bytes(await instruction.read())
+    ref_paths = []
+    for r in refs:
+        if not r.filename:
+            continue
+        p = uploads / Path(r.filename).name
+        p.write_bytes(await r.read())
+        ref_paths.append(str(p))
+    run_id = start_patch(cfg, conn(), parent_id, inst_path, ref_paths)
+    threading.Thread(target=_run_in_background, args=(run_id,), daemon=True).start()
+    return {"run_id": run_id, "parent_id": parent_id}
 
 
 def _run_in_background(run_id: str):

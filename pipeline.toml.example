@@ -9,7 +9,7 @@ llama_server = "C:/llama.cpp/llama-server.exe"
 [llm]
 router_gguf = "C:/models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
 router_port = 8090
-coder_gguf = "C:/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+coder_gguf = "C:/models/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"   # dense 32B
 coder_port = 8091
 ctx_size = 32768
 temperature = 0.6
@@ -27,12 +27,17 @@ timeout_s = 600
 url = "http://127.0.0.1:5005"
 timeout_s = 300
 
-[meshy]
-api_key_env = "MESHY_API_KEY"
+[motion]                 # local rig + animate, Blender headless — no cloud, no API key
+blender = "C:/blender/blender.exe"
+script = "templates/blender_motion.py"
+cmu_dir = ""             # CMU BVH mocap library dir (optional; exact-match clips reused)
+unirig = ""              # UniRig checkpoint dir (optional; auto-rigs arbitrary meshes)
+kimodo_url = ""          # Kimodo local endpoint, e.g. http://127.0.0.1:8710 (optional)
+timeout_s = 1800
 
 [scheduler]
 max_attempts = 3
-wave_order = ["coder", "sdxl", "trellis", "tts"]
+wave_order = ["coder", "sdxl", "trellis", "motion", "tts"]
 
 [gui]
 host = "127.0.0.1"

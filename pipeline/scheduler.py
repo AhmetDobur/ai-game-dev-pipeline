@@ -3,10 +3,10 @@
 Core policy (the whole point of this module): minimize model switches. One model is
 loaded at a time; a wave drains EVERY ready task of that model's type, validating
 in-wave so retries reuse the already-loaded model instead of costing a reload.
-Network-bound tasks (rig_animate) run in a background lane alongside GPU waves;
-assemble tasks are CPU-only and run between waves.
+The motion wave (Blender + UniRig/Kimodo) is GPU-bound, so it runs serially like
+every other wave — one thing on the 24GB card at a time. assemble tasks are
+CPU-only and run between waves.
 """
-import threading
 import time
 import traceback
 from pathlib import Path
@@ -20,9 +20,9 @@ TASK_WAVE = {
     "code": "coder",
     "design_2d": "sdxl",
     "design_3d": "trellis",
+    "rig_animate": "motion",      # local Blender rig+animate, own GPU wave
     "audio": "tts",
 }
-LANE_TYPES = {"rig_animate"}      # async, no local VRAM
 LOCAL_TYPES = {"assemble"}        # CPU subprocess, no model
 
 # Executor: (task, out_dir) -> list of produced Paths.
@@ -40,11 +40,10 @@ class Scheduler:
         self.executors = executors
         self.workspace = workspace
         self.max_attempts = max_attempts
-        self.wave_order = wave_order or ["coder", "sdxl", "trellis", "tts"]
+        self.wave_order = wave_order or ["coder", "sdxl", "trellis", "motion", "tts"]
         self.wave_setup = wave_setup or {}
         self.wave_teardown = wave_teardown or {}
         self.godot_binary = godot_binary
-        self._lane_threads: list[threading.Thread] = []
 
     # -- public ---------------------------------------------------------------
 
@@ -58,10 +57,9 @@ class Scheduler:
         try:
             while not db.run_finished(self.conn, self.run_id):
                 progressed = self._one_cycle()
-                self._join_lanes()
                 if not progressed:
-                    # lanes are joined, so a zero-progress cycle is deterministic:
-                    # anything still ready has no serving wave — fail it visibly
+                    # a zero-progress cycle is deterministic: anything still ready
+                    # has no serving wave — fail it visibly instead of spinning
                     for t in db.ready_tasks(self.conn, self.run_id):
                         db.update_task(self.conn, t["id"], status="failed",
                                        error=f"no wave serves task type {t['type']!r}"
@@ -83,9 +81,8 @@ class Scheduler:
     # -- internals ------------------------------------------------------------
 
     def _one_cycle(self) -> bool:
-        """One pass over lanes, local tasks and every wave. Returns True if any task ran."""
-        progressed = self._start_lane_tasks()
-        progressed |= self._run_tasks_of_types(LOCAL_TYPES)
+        """One pass over local tasks and every wave. Returns True if any task ran."""
+        progressed = self._run_tasks_of_types(LOCAL_TYPES)
 
         for wave in self.wave_order:
             types = {t for t, w in TASK_WAVE.items() if w == wave}
@@ -120,34 +117,8 @@ class Scheduler:
             ran = True
         return ran
 
-    def _start_lane_tasks(self) -> bool:
-        started = False
-        for task in [t for t in db.ready_tasks(self.conn, self.run_id)
-                     if t["type"] in LANE_TYPES]:
-            db.update_task(self.conn, task["id"], status="in_progress")
-            th = threading.Thread(target=self._lane_run, args=(task,), daemon=True)
-            th.start()
-            self._lane_threads.append(th)
-            started = True
-        return started
-
-    def _lane_run(self, task: dict) -> None:
-        """Thread body for lane tasks: nothing may escape, or the task would be
-        orphaned in_progress and the run's terminal status would lie."""
-        try:
-            self._execute_with_retries(task, claimed=True)
-        except Exception as e:
-            db.update_task(self.conn, task["id"], status="failed",
-                           error=f"lane thread crashed: {type(e).__name__}: {e}")
-
-    def _join_lanes(self) -> None:
-        for th in self._lane_threads:
-            th.join()
-        self._lane_threads.clear()
-
-    def _execute_with_retries(self, task: dict, claimed: bool = False) -> None:
-        if not claimed:
-            db.update_task(self.conn, task["id"], status="in_progress")
+    def _execute_with_retries(self, task: dict) -> None:
+        db.update_task(self.conn, task["id"], status="in_progress")
         executor = self.executors.get(task["type"])
         if executor is None:
             db.update_task(self.conn, task["id"], status="failed",

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .adapters.comfy import ComfyClient
 from .adapters.llm import LlamaServer
-from .adapters.meshy import MeshyClient
+from .adapters.motion import MotionStage
 from .adapters.tts import TTSClient
 
 CODE_PROMPT = """You are the coder of an automated Godot 4 game pipeline.
@@ -56,6 +56,9 @@ def build_executors(cfg: dict, workspace: Path,
                     coder: LlamaServer) -> dict:
     comfy = ComfyClient(cfg["comfy"]["url"], cfg["comfy"]["timeout_s"])
     tts = TTSClient(cfg["tts"]["url"], cfg["tts"]["timeout_s"])
+    motion = MotionStage(cfg["motion"]["blender"], cfg["motion"]["script"],
+                         cfg["motion"]["cmu_dir"], cfg["motion"]["unirig"],
+                         cfg["motion"]["kimodo_url"], cfg["motion"]["timeout_s"])
     game_dir = workspace / "game"
 
     def code(task: dict, out_dir: Path) -> list[Path]:
@@ -106,15 +109,13 @@ def build_executors(cfg: dict, workspace: Path,
         return comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir)
 
     def rig_animate(task: dict, out_dir: Path) -> list[Path]:
-        import base64
-        mesh_path = _resolve_dep(task, task["spec"]["mesh_from"])
-        # Meshy wants a URL; a base64 data URI keeps local meshes local
-        model_url = ("data:model/gltf-binary;base64,"
-                     + base64.b64encode(mesh_path.read_bytes()).decode())
-        meshy = MeshyClient(cfg["meshy"]["url"], cfg["meshy"]["api_key_env"],
-                            cfg["meshy"]["poll_interval_s"], cfg["meshy"]["timeout_s"])
-        return meshy.rig_and_animate(model_url,
-                                     task["spec"].get("animations", ["idle"]), out_dir)
+        spec = task["spec"]
+        mesh_path = _resolve_dep(task, spec["mesh_from"])
+        # local Blender: humanoid -> mocap/generated motion; anything else -> procedural.
+        # extras (tail/jaw/wings) always get procedural secondary motion on top.
+        return motion.build(mesh_path, spec.get("body_plan", "humanoid"),
+                            spec.get("animations", ["idle"]), spec.get("extras", []),
+                            out_dir)
 
     def audio(task: dict, out_dir: Path) -> list[Path]:
         out = out_dir / "line.wav"

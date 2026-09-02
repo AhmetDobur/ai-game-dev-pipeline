@@ -107,13 +107,14 @@ def test_eta_defaults_when_no_history_and_done_excluded(tmp_path):
     assert e["seconds_p50"] == eta.DEFAULT_TASK_S["audio"] + eta.DEFAULT_LOAD_S["tts"]
 
 
-def test_eta_lane_overlaps_gpu_timeline(tmp_path):
+def test_eta_motion_wave_is_serial(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     run = db.create_run(conn, "i.md")
-    db.add_task(conn, run, "rig_animate", {"mesh_from": "m"})  # lane: default 600s
-    db.add_task(conn, run, "audio", {"text": "x"})             # gpu: 30 + 0 load
-    e = eta.estimate(conn, run, ["tts"])
-    assert e["seconds_p50"] == 600  # max(gpu, lane), not sum
+    db.add_task(conn, run, "rig_animate", {"mesh_from": "m"})  # motion wave: default 600s
+    db.add_task(conn, run, "audio", {"text": "x"})             # tts wave: 30 + 0 load
+    e = eta.estimate(conn, run, ["motion", "tts"])
+    # one GPU -> everything serial: motion (0 load + 600) + tts (0 load + 30)
+    assert e["seconds_p50"] == 630
 
 
 def test_in_progress_task_gets_elapsed_credit(tmp_path):

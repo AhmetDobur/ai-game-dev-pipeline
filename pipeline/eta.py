@@ -5,9 +5,8 @@ per-wave model-load durations, persisted in the durations table), aggregated
 wave-aware:
 
 - the GPU timeline is the sum of remaining waves: one model load + every
-  remaining task of that wave (medians of history);
-- rig_animate is network-bound and runs in parallel lanes, so it contributes
-  max(per-task medians), overlapped with the GPU timeline;
+  remaining task of that wave (medians of history). One GPU means everything
+  is serial — the motion wave included — so there is no parallel overlap term;
 - an in_progress task gets credit for time already spent;
 - uncertainty: per-item spread ((p90 - p50) / 1.28 as a normal sigma) added in
   quadrature, reported as a p50..p90 band instead of one fake-precise number;
@@ -17,12 +16,12 @@ import math
 import time
 
 from . import db
-from .scheduler import LANE_TYPES, LOCAL_TYPES, TASK_WAVE
+from .scheduler import LOCAL_TYPES, TASK_WAVE
 
 # cold-start seconds per task type / model load, replaced by history as it accrues
 DEFAULT_TASK_S = {"code": 240, "design_2d": 90, "design_3d": 300,
                   "audio": 30, "rig_animate": 600, "assemble": 120}
-DEFAULT_LOAD_S = {"coder": 90, "sdxl": 60, "trellis": 90, "tts": 0}
+DEFAULT_LOAD_S = {"coder": 90, "sdxl": 60, "trellis": 90, "motion": 0, "tts": 0}
 DEFAULT_SPREAD = 0.5  # p90 assumed 50% above p50 when there is no history
 
 
@@ -87,20 +86,7 @@ def estimate(conn, run_id: str, wave_order: list[str]) -> dict:
         total += 1
         breakdown.append({"wave": "local", "tasks": 1, "seconds_p50": round(p50)})
 
-    # network lane runs alongside the GPU timeline; parallel threads -> max, not sum
-    lane_p50 = 0.0
-    lane_tasks = [t for t in remaining if t["type"] in LANE_TYPES]
-    for t in lane_tasks:
-        p50, sig, hist = _stats(conn, t["type"], DEFAULT_TASK_S[t["type"]])
-        lane_p50 = max(lane_p50, credit(t, p50))
-        var += sig ** 2
-        from_history += hist
-        total += 1
-    if lane_tasks:
-        breakdown.append({"wave": "meshy-lane", "tasks": len(lane_tasks),
-                          "seconds_p50": round(lane_p50)})
-
-    p50 = max(gpu_p50, lane_p50)
+    p50 = gpu_p50
     p90 = p50 + 1.28 * math.sqrt(var)
     confidence = ("history" if from_history == total
                   else "defaults" if from_history == 0 else "mixed")
