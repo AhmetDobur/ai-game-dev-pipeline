@@ -14,7 +14,10 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
              project_dir: Path | None = None) -> tuple[bool, str]:
     kind = task["type"]
     if kind == "code":
-        return _validate_code(output_paths, godot_binary, project_dir)
+        ok, detail = _validate_code(output_paths, godot_binary, project_dir)
+        if ok and task["spec"].get("frame_data") and project_dir is not None:
+            return _validate_frame_data(godot_binary, project_dir)
+        return ok, detail
     if kind == "design_2d":
         return _validate_files(output_paths, IMAGE_EXTS, MIN_IMAGE_BYTES, "image")
     if kind == "design_3d":
@@ -55,6 +58,28 @@ def _validate_audio(paths: list[Path]) -> tuple[bool, str]:
         if duration < 0.2:
             return False, f"{p.name}: {duration:.2f}s — effectively silent"
     return True, f"{len(paths)} audio file(s) ok"
+
+
+def _validate_frame_data(godot_binary: str, project_dir: Path) -> tuple[bool, str]:
+    """Run the pipeline's own headless simulation grader against frame_data.json.
+    The grader is templates/frame_data_test.gd, copied into the game by the code
+    executor — timing is judged by hard numbers, never by an LLM's opinion."""
+    test = project_dir / "tests" / "frame_data_test.gd"
+    if not test.exists():
+        return False, "frame_data specced but tests/frame_data_test.gd missing from game dir"
+    try:
+        r = subprocess.run(
+            [godot_binary, "--headless", "--path", str(project_dir),
+             "--script", "res://tests/frame_data_test.gd"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+    except FileNotFoundError:
+        return True, "godot binary not found — frame-data simulation skipped"
+    except subprocess.TimeoutExpired:
+        return False, "frame-data simulation timed out (combat loop may not terminate)"
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode == 0 and "FRAME_DATA_OK" in out:
+        return True, "frame-data simulation passed"
+    return False, f"frame-data simulation failed:\n{out[-2000:]}"
 
 
 def _validate_code(paths: list[Path], godot_binary: str,

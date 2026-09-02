@@ -104,6 +104,34 @@ failures, missing/too-small files, dead audio, failed exports). No LLM opinion
 ever fails a task — an LLM asked to critique working output will always find
 something, and acting on that rewrites good artifacts into bad ones.
 
+### Frame-data contract (combat timing as spec, not vibes)
+
+Fighting-game "feel" is quantifiable: startup/active/recovery frames, hitstun,
+knockback vectors, hitstop. When the instruction.md contains a timing table,
+the decomposer copies it **verbatim** into the `scripts/combat_sim.gd` code
+task as `frame_data`:
+
+```json
+{"punch": {"startup": 8, "active": 3, "hitstun": 18,
+           "knockback": [40, 0], "tolerance": 2}}
+```
+
+Frame counts are at 60fps fixed step. The code executor then:
+
+1. writes the table to `frame_data.json` in the game project,
+2. copies the pipeline's **own** grader (`templates/frame_data_test.gd` — a
+   static GDScript, never written by the model) into `tests/`,
+3. tells the coder model the `CombatSim` API contract it must implement:
+   `setup(move)`, `press(move)`, `step()`, `hitbox_active()`,
+   `opponent_in_hitstun()`, `opponent_offset()`.
+
+Validation runs `godot --headless --script res://tests/frame_data_test.gd`,
+which steps the simulation frame by frame and asserts every number in the
+table. Wrong startup frame → hard test failure with the exact numbers → the
+in-wave retry feeds it back to the coder. Timing is graded by arithmetic,
+never by opinion. Tuning the game's feel afterwards means editing a JSON
+table and re-running one wave — not reopening code.
+
 ### Repo layout
 
 ```
@@ -122,6 +150,7 @@ pipeline/
     meshy.py       rig + animate + FBX download
     tts.py         Orpheus /v1/audio/speech
 run.py             CLI: gui | run <instruction.md> [--ref img] | status
+templates/         frame_data_test.gd — the pipeline's own headless timing grader
 workflows/         ComfyUI API-format workflow JSONs ({{prompt}} placeholders)
 pipeline.toml.example
 requirements.txt   pinned exact versions (core: fastapi, uvicorn, requests, python-multipart)

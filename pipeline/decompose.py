@@ -13,7 +13,8 @@ Allowed task types and what their spec must contain:
 - "design_2d": {{"prompt": <SDXL prompt>, "purpose": <what this art is for>}}
 - "design_3d": {{"prompt": <text spec>, "concept_from": <design_2d task id>}}
 - "rig_animate": {{"mesh_from": <design_3d task id>, "animations": [<clip names>]}}
-- "code": {{"file": <relative path in the Godot project>, "description": <what to implement>}}
+- "code": {{"file": <relative path in the Godot project>, "description": <what to implement>,
+            "frame_data": <optional — see below>}}
 - "audio": {{"text": <line to speak>, "voice": <voice name>}}
 - "assemble": {{"export_preset": <Godot export preset name>}}
 
@@ -21,6 +22,11 @@ Rules:
 - Every task: {{"id": <short unique string>, "type": <type>, "depends_on": [<ids>], "spec": {{...}}}}
 - design_3d depends on the design_2d it is conditioned on. rig_animate depends on its design_3d.
 - code tasks for the Godot project; exactly one final "assemble" task depending on everything.
+- When the game description contains combat timing tables (frame data), copy them
+  VERBATIM into one code task with "file": "scripts/combat_sim.gd" as
+  "frame_data": {{<move>: {{"startup": n, "active": n, "hitstun": n,
+  "knockback": [x, y], "tolerance": n}}}}. Frame counts are at 60fps. That task
+  will be graded by a headless simulation against these exact numbers.
 - Reference images uploaded by the user: {ref_note}
 
 Game description:

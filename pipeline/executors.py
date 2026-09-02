@@ -1,5 +1,6 @@
 """Production executors: one callable per task type, built from config.
 Each takes (task, out_dir) and returns the list of produced files."""
+import json
 import subprocess
 from pathlib import Path
 
@@ -15,7 +16,24 @@ Write the complete content of `{file}` for a Godot 4 project.
 What it must do:
 {description}
 
-{fix_note}Reply with ONLY the file content in a single fenced code block."""
+{frame_data_note}{fix_note}Reply with ONLY the file content in a single fenced code block."""
+
+# The CombatSim contract lets the pipeline grade timing with its own static
+# GDScript test (templates/frame_data_test.gd) instead of trusting the model.
+COMBAT_SIM_CONTRACT = """This file is graded by a headless frame-data simulation. It MUST be a
+GDScript class implementing exactly this API (60fps fixed steps, no scene tree,
+no rendering, pure simulation):
+
+    setup(move: String) -> void   # place two fighters at the move's range
+    press(move: String) -> void   # buffer the input for the next frame
+    step() -> void                # advance exactly one frame
+    hitbox_active() -> bool       # attacker's hitbox live this frame
+    opponent_in_hitstun() -> bool
+    opponent_offset() -> Vector2  # opponent displacement since setup()
+
+It must read its numbers from res://frame_data.json and honour them exactly:
+{frame_data}
+"""
 
 
 def _extract_block(reply: str) -> str:
@@ -45,15 +63,31 @@ def build_executors(cfg: dict, workspace: Path,
         fix_note = ""
         if task.get("last_error"):
             fix_note = f"Your previous attempt failed validation:\n{task['last_error']}\n\n"
+        frame_data_note = ""
+        produced = []
+        if spec.get("frame_data"):
+            # materialize the table + the pipeline's own grader into the game dir
+            game_dir.mkdir(parents=True, exist_ok=True)
+            fd_path = game_dir / "frame_data.json"
+            fd_path.write_text(json.dumps(spec["frame_data"], indent=1), encoding="utf-8")
+            test_dst = game_dir / "tests" / "frame_data_test.gd"
+            test_dst.parent.mkdir(parents=True, exist_ok=True)
+            test_dst.write_text((Path(__file__).parent.parent / "templates"
+                                 / "frame_data_test.gd").read_text(encoding="utf-8"),
+                                encoding="utf-8")
+            produced = [fd_path, test_dst]
+            frame_data_note = COMBAT_SIM_CONTRACT.format(
+                frame_data=json.dumps(spec["frame_data"], indent=1)) + "\n"
         reply = coder.chat(
             [{"role": "user", "content": CODE_PROMPT.format(
-                file=spec["file"], description=spec["description"], fix_note=fix_note)}],
+                file=spec["file"], description=spec["description"],
+                frame_data_note=frame_data_note, fix_note=fix_note)}],
             temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"],
             timeout_s=cfg["llm"]["request_timeout_s"])
         path = game_dir / spec["file"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_extract_block(reply), encoding="utf-8")
-        return [path]
+        return [path, *produced]
 
     def design_2d(task: dict, out_dir: Path) -> list[Path]:
         return comfy.run_workflow(cfg["comfy"]["sdxl_workflow"],
