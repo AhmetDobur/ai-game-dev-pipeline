@@ -15,9 +15,14 @@ class ComfyClient:
 
     def run_workflow(self, workflow_path: str | Path, substitutions: dict[str, str],
                      out_dir: Path) -> list[Path]:
-        """Load a workflow JSON, substitute {{placeholders}}, run, download outputs."""
+        """Load a workflow JSON, substitute {{placeholders}}, run, download outputs.
+        A substitution value that is an existing local file (e.g. the concept image
+        for TRELLIS) is uploaded first — LoadImage only accepts files in ComfyUI's
+        own input dir, never absolute paths."""
         text = Path(workflow_path).read_text(encoding="utf-8")
         for key, value in substitutions.items():
+            if value and Path(value).is_file():
+                value = self.upload_image(Path(value))
             text = text.replace("{{" + key + "}}", json.dumps(value)[1:-1])  # json-escape
         workflow = json.loads(text)
 
@@ -58,6 +63,15 @@ class ComfyClient:
         if not saved:
             raise RuntimeError("ComfyUI reported done but produced no downloadable outputs")
         return saved
+
+    def upload_image(self, path: Path) -> str:
+        """POST a local image into ComfyUI's input dir; return the name LoadImage wants."""
+        with open(path, "rb") as f:
+            r = requests.post(f"{self.url}/upload/image",
+                              files={"image": (path.name, f)},
+                              data={"overwrite": "true"}, timeout=120)
+        r.raise_for_status()
+        return r.json()["name"]
 
     def free_vram(self) -> None:
         """Ask ComfyUI to unload models + free VRAM between waves."""

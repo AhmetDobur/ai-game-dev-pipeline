@@ -17,7 +17,9 @@ DEFAULTS: dict = {
         "router_port": 8090,
         "coder_gguf": "",                    # dense Qwen2.5-Coder-32B-Instruct Q4_K_M
         "coder_port": 8091,
-        "ctx_size": 32768,
+        "ctx_size": 32768,                   # coder context
+        "router_ctx_size": 131072,           # manager context: fits a big instruction.md
+                                             # (~0.5MB / ~128k tokens, DeepSeek-R1-7B's real max)
         "temperature": 0.6,
         "max_tokens": 4096,
         "load_timeout_s": 300,               # big GGUF from HDD can be slow

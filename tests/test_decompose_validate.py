@@ -84,3 +84,32 @@ def test_validate_image_size_floor(tmp_path):
     big = tmp_path / "b.png"; big.write_bytes(b"x" * 30_000)
     ok, _ = validate({"type": "design_2d"}, [big])
     assert ok
+
+
+def test_run_workflow_uploads_local_file_substitutions(tmp_path, monkeypatch):
+    """A substitution value that is a real file must be uploaded and replaced by
+    the uploaded name — LoadImage never accepts absolute paths."""
+    from pipeline.adapters.comfy import ComfyClient
+
+    wf = tmp_path / "wf.json"
+    wf.write_text('{"1": {"class_type": "LoadImage", "inputs": {"image": "{{image}}"}}}')
+    img = tmp_path / "concept.png"
+    img.write_bytes(b"\x89PNGfake")
+
+    client = ComfyClient("http://127.0.0.1:9")
+    submitted = {}
+    monkeypatch.setattr(client, "upload_image", lambda p: f"uploaded-{p.name}")
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"prompt_id": "p1"}
+    def fake_post(url, json=None, **kw):
+        submitted["workflow"] = json["prompt"]
+        raise RuntimeError("stop after submit")  # don't enter the poll loop
+    monkeypatch.setattr("pipeline.adapters.comfy.requests.post", fake_post)
+
+    try:
+        client.run_workflow(wf, {"image": str(img), "prompt": "a fighter"}, tmp_path)
+    except RuntimeError:
+        pass
+    assert submitted["workflow"]["1"]["inputs"]["image"] == "uploaded-concept.png"
