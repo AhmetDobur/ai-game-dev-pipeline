@@ -10,7 +10,7 @@ original fighting-game demo, but nothing about the game is hardcoded: the game
 arrives as an instruction file through the GUI, gets decomposed into a typed
 task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-- **Version:** 0.3.0 (semver; git tags `vX.Y.Z`)
+- **Version:** 0.4.0 (semver; git tags `vX.Y.Z`)
 - **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
 - **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
   writes is reviewable plain text; headless import/export)
@@ -144,7 +144,8 @@ pipeline/
   orchestrate.py   wires config+adapters+scheduler for one run
   validate.py      objective per-branch validators
   eta.py           learned wave-aware ETA (p50–p90 band from run history)
-  gui.py           FastAPI page: upload, live task table, ETA, auto-resume
+  watch.py         inbox auto-start: claim-by-rename, sibling refs, reconcile
+  gui.py           FastAPI page: upload, live task table, ETA, auto-resume + watch
   adapters/
     llm.py         llama-server lifecycle + chat + Qwen2.5 <tools> shim
     comfy.py       ComfyUI /prompt → poll /history → download outputs
@@ -329,10 +330,33 @@ Start-ScheduledTask -TaskName AIGameDevPipeline
 
 Remove it with `scripts\uninstall_autostart.ps1`.
 
-Scope note: autostart **resumes existing unfinished runs** — it does not invent
-new games. A new game still starts from an `instruction.md` upload; once
-started, nothing short of deleting the workspace stops it from finishing across
-reboots.
+### Watched folder (drop a file, a game starts)
+
+With autostart on, the pipeline also watches an **inbox** folder. Drop any
+`*.md` in there and a run begins on its own — no GUI, no clicking:
+
+```
+inbox/
+  mygame.md            ← dropped; auto-starts within poll_interval_s (default 10s)
+  mygame.png           ← optional; any sibling image with the same stem is used as a reference
+  started/             ← claimed files move here so they never restart twice
+```
+
+- A file is **claimed by an atomic rename** into `inbox/started/`, so two polls
+  (or a crash mid-claim) can never start the same game twice.
+- Sibling images sharing the `.md`'s stem (`mygame.png`, `mygame_ref2.jpg`)
+  become that run's reference images.
+- Watched runs share the one-GPU lock with GUI runs and resumes — they queue,
+  never collide.
+- On startup a reconcile pass recovers any file that was claimed but whose run
+  never got created (the one-in-a-million crash between rename and record).
+
+Run the watcher without the GUI: `python run.py watch`. Change the folder or
+cadence under `[watch]` in `pipeline.toml`.
+
+Scope note: autostart **resumes unfinished runs and watches the inbox**. A new
+game enters either by GUI upload or by landing in the inbox; once started,
+nothing short of deleting the workspace stops it from finishing across reboots.
 
 ## Configuration reference
 

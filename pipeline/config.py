@@ -44,6 +44,10 @@ DEFAULTS: dict = {
         "max_attempts": 3,                   # in-wave retries per task
         "wave_order": ["coder", "sdxl", "trellis", "tts"],
     },
+    "watch": {
+        "dir": "inbox",                      # drop instruction.md files here to auto-start
+        "poll_interval_s": 10,
+    },
     "gui": {
         "host": "127.0.0.1",
         "port": 8500,

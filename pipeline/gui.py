@@ -15,14 +15,15 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(app):
-    """Crash-safe restart: any run interrupted by kill/shutdown/power cut
-    continues automatically when the GUI comes back up."""
-    def worker():
+    """On startup: resume any run interrupted by kill/shutdown/power cut, then
+    watch the inbox so dropped instruction.md files auto-start new games."""
+    def resume_then_watch():
+        from . import watch
         c = db.connect(cfg["paths"]["db"])
         with _run_lock:
-            resume_incomplete_runs(cfg, c)
-    if db.incomplete_runs(conn()):
-        threading.Thread(target=worker, daemon=True).start()
+            resume_incomplete_runs(cfg, c)   # finish interrupted work first
+        watch.watch_loop(cfg)                # then poll the inbox forever
+    threading.Thread(target=resume_then_watch, daemon=True).start()
     yield
 
 

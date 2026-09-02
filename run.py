@@ -21,6 +21,8 @@ def main():
 
     sub.add_parser("resume", help="continue every run interrupted by kill/shutdown/power cut")
 
+    sub.add_parser("watch", help="watch the inbox folder and auto-start dropped instruction.md files")
+
     args = ap.parse_args()
     cfg = config.load()
     conn = db.connect(cfg["paths"]["db"])
@@ -38,6 +40,9 @@ def main():
         from pipeline.orchestrate import resume_incomplete_runs
         resumed = resume_incomplete_runs(cfg, conn)
         print(f"resumed {len(resumed)} run(s)" if resumed else "nothing to resume")
+    elif args.cmd == "watch":
+        from pipeline.watch import watch_loop
+        watch_loop(cfg)
     elif args.cmd == "status":
         from pipeline import eta
         if args.run_id:
