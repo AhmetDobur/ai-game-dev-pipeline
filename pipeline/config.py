@@ -20,6 +20,9 @@ DEFAULTS: dict = {
         "ctx_size": 32768,                   # coder context
         "router_ctx_size": 131072,           # manager context: fits a big instruction.md
                                              # (~0.5MB / ~128k tokens, DeepSeek-R1-7B's real max)
+        # q8 KV cache: 32k ctx costs 8.6GB at fp16 but 4.3GB at q8 — the 32B coder
+        # (19.5GB weights) only fits 24GB VRAM with this on
+        "coder_extra_args": ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
         "temperature": 0.6,
         "max_tokens": 4096,
         "load_timeout_s": 300,               # big GGUF from HDD can be slow

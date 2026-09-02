@@ -325,7 +325,10 @@
     "19",
     0
    ],
-   "sign_mode": "udf"
+   "sign_mode": "udf",
+   "sign_mode.drop_inverted_components": false,
+   "sign_mode.drop_enclosed_components": false,
+   "sign_mode.qef": false
   }
  },
  "24": {

@@ -47,7 +47,8 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
                              cfg["llm"]["load_timeout_s"])
         coder = LlamaServer(cfg["paths"]["llama_server"], cfg["llm"]["coder_gguf"],
                             cfg["llm"]["coder_port"], cfg["llm"]["ctx_size"],
-                            cfg["llm"]["load_timeout_s"])
+                            cfg["llm"]["load_timeout_s"],
+                            extra_args=cfg["llm"]["coder_extra_args"])
         comfy = ComfyClient(cfg["comfy"]["url"], cfg["comfy"]["timeout_s"])
 
         # resume support: a run that already has tasks was interrupted mid-flight —
@@ -56,8 +57,11 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
         # "has tasks" means "has ALL tasks".
         import json
         from . import livelog
-        router.start()  # resident for the whole run
         if not db.list_tasks(conn, run_id):
+            # the router is only needed for planning; stop it right after so its
+            # VRAM is free for the waves — 7B router + 32B coder + KV cache
+            # does not fit 24GB together
+            router.start()
             refs = json.loads(run["reference_images"])
             if run["parent_id"]:
                 _plan_patch(cfg, conn, run_id, run["parent_id"], instruction, refs,
@@ -68,6 +72,7 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
                                   cfg["llm"]["temperature"], cfg["llm"]["max_tokens"],
                                   on_token=livelog.token_sink(run_id))
                 insert_tasks(conn, run_id, tasks)
+            router.stop()
 
         scheduler = Scheduler(
             conn, run_id,
