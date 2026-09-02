@@ -117,9 +117,11 @@ def build_executors(cfg: dict, workspace: Path,
         return [tts.speak(task["spec"]["text"], task["spec"].get("voice", "leo"), out)]
 
     def assemble(task: dict, out_dir: Path) -> list[Path]:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # stable, predictable location so users find the build without a task id
+        dist = workspace / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
         preset = task["spec"].get("export_preset", "Windows Desktop")
-        target = out_dir / ("game.exe" if "windows" in preset.lower() else "game.zip")
+        target = dist / ("game.exe" if "windows" in preset.lower() else "game.zip")
         godot = cfg["paths"]["godot"]
         subprocess.run([godot, "--headless", "--path", str(game_dir), "--import"],
                        check=False, capture_output=True, timeout=600)

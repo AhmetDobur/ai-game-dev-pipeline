@@ -189,6 +189,87 @@ python -m pytest tests/ -q
 
 ---
 
+## Using it — end to end
+
+### 1. Write an `instruction.md`
+
+This is the whole input. There is no fixed schema — write it like a brief for a
+developer. The router reads it and decides the tasks. The more concrete you are
+(exact characters, moves, arena, and any timing tables), the less the models
+have to invent. A minimal fighting-game example:
+
+```markdown
+# Neon Duel — 1v1 fighter demo
+
+Original IP. Two fighters, one arena, best-of-one round, KO ends the match.
+
+## Characters
+- **Ravi** — lean street brawler, red jacket, fast light attacks.
+- **Bo** — heavy grappler, blue armor, slow but high knockback.
+
+## Arena
+- Single flat stage, neon-city backdrop, invisible walls at the edges.
+
+## Combat
+- Moves: light punch, heavy kick, block, jump.
+- Health bar per fighter; hit reactions; KO state when health hits 0.
+
+## Frame data (60fps) — grade these exactly
+| move        | startup | active | hitstun | knockback |
+|-------------|---------|--------|---------|-----------|
+| light_punch | 6       | 2      | 12      | [25, 0]   |
+| heavy_kick  | 12      | 4      | 20      | [60, 0]   |
+
+## UI
+- Two health bars, round timer, "KO!" banner.
+```
+
+Any timing table like the one above is copied verbatim into the combat code
+task and **graded by simulation** (see Frame-data contract above) — get those
+numbers right and the feel is right.
+
+### 2. Start a game — three ways
+
+- **GUI:** `python run.py gui` → open http://127.0.0.1:8500 → upload the `.md`
+  (and any reference images) → **Start run**. The task table and a live ETA
+  bar show progress.
+- **Inbox (hands-off):** copy `neon-duel.md` into the `inbox/` folder (put
+  `neon-duel.png` next to it to use as a style reference). It auto-starts within
+  ~10s. This is what fires on boot when autostart is installed.
+- **CLI:** `python run.py run neon-duel.md --ref style.png`.
+
+### 3. Watch it
+
+- GUI: per-run progress bar + p50–p90 ETA + the task table.
+- Terminal: an `[eta]` line prints after every task; `python run.py status`
+  lists runs, and `python run.py status <run_id>` shows every task's state.
+
+### 4. Get the build
+
+When the run finishes, the exported game is under
+`workspace/runs/<run_id>/dist/` (a `.exe` for the `Windows Desktop` preset).
+The full generated Godot project — every script, image, mesh, and audio file —
+is in `workspace/runs/<run_id>/game/`, so you can open it in the Godot editor
+and keep working by hand.
+
+### 5. Tune the feel
+
+If a move feels off, edit its numbers in the instruction's frame-data table and
+re-run — the combat wave re-grades against the new values. No code editing
+needed for timing. For animation quality (the one thing generation can't nail),
+open the `game/` project and retarget a mocap animation pack onto the rigged
+skeletons.
+
+### If something fails
+
+A failed task turns red in the GUI with the exact validator error; the run
+finishes as `failed` and lists how many tasks failed or were blocked. Fix the
+cause (usually a tool not running, a bad path in `pipeline.toml`, or the TRELLIS
+workflow placeholder) and re-run — completed artifacts are reused, only the
+failed branch re-executes.
+
+---
+
 ## Installing the tool stack (Windows)
 
 Everything below is external to this repo — the spine only talks to these over
