@@ -10,7 +10,7 @@ original fighting-game demo, but nothing about the game is hardcoded: the game
 arrives as an instruction file through the GUI, gets decomposed into a typed
 task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-- **Version:** 0.1.0 (semver; git tags `vX.Y.Z`)
+- **Version:** 0.3.0 (semver; git tags `vX.Y.Z`)
 - **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
 - **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
   writes is reviewable plain text; headless import/export)
@@ -137,13 +137,14 @@ table and re-running one wave — not reopening code.
 ```
 pipeline/
   config.py        pipeline.toml loader (leaf module, imports nothing)
-  db.py            SQLite queue: runs, tasks, deps, ready-set, run_finished
+  db.py            SQLite queue: runs, tasks, durations, reclaim, ready-set
   decompose.py     router prompt → validated task list → queue
   scheduler.py     wave scheduler + async/local lanes + in-wave retry
   executors.py     production executors (one per task type)
   orchestrate.py   wires config+adapters+scheduler for one run
   validate.py      objective per-branch validators
-  gui.py           FastAPI single page: upload, start, live task table
+  eta.py           learned wave-aware ETA (p50–p90 band from run history)
+  gui.py           FastAPI page: upload, live task table, ETA, auto-resume
   adapters/
     llm.py         llama-server lifecycle + chat + Qwen2.5 <tools> shim
     comfy.py       ComfyUI /prompt → poll /history → download outputs
@@ -273,6 +274,40 @@ Create an API key at <https://www.meshy.ai> → set the `MESHY_API_KEY`
 environment variable. Network-bound; runs concurrently with GPU waves.
 
 ---
+
+## Crash safety & resume
+
+There is no pause button because none is needed: **the queue is the truth and
+every state change is fsynced** (`PRAGMA synchronous=FULL` on a WAL SQLite).
+Kill the process, shut the machine down, pull the plug mid-run — on the next
+start the pipeline continues where it stopped:
+
+- the GUI auto-resumes every unfinished run on startup; `python run.py resume`
+  does the same from the terminal;
+- tasks caught `in_progress` by the crash are reclaimed to `pending`; their
+  attempt counts survive, so a task that keeps killing the process still
+  exhausts `max_attempts` instead of crash-looping forever;
+- decomposition inserts are one atomic transaction — a crash mid-decompose
+  leaves zero tasks, and resume re-decomposes from scratch;
+- completed artifacts live on disk and are never re-generated.
+
+The unit of loss on a hard kill is at most the single task that was executing.
+
+## ETA
+
+Both the GUI (progress bar per run) and the terminal (`[eta] ...` line after
+every task, and `python run.py status`) show a live estimate that is
+**learned, wave-aware and honest about uncertainty**:
+
+- every task execution and every model load is timed and persisted
+  (`durations` table), and estimates use the median + p90 of recent history —
+  the more the pipeline runs, the sharper it gets;
+- the projection replays the scheduler's own plan: remaining waves in order,
+  one model-load cost per wave, network-lane work overlapped (max, not sum)
+  with the GPU timeline, in-flight tasks credited for time already spent;
+- the answer is a p50–p90 *band* (spreads added in quadrature), never a single
+  fake-precise number, and it is labeled `[history]`, `[mixed]` or
+  `[defaults]` so you know what it is based on.
 
 ## Configuration reference
 

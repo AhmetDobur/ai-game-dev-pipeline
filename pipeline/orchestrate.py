@@ -32,11 +32,17 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
                             cfg["llm"]["load_timeout_s"])
         comfy = ComfyClient(cfg["comfy"]["url"], cfg["comfy"]["timeout_s"])
 
-        router.start()  # resident for the whole run
-        import json
-        tasks = decompose(router, instruction, json.loads(run["reference_images"]),
-                          cfg["llm"]["temperature"], cfg["llm"]["max_tokens"])
-        insert_tasks(conn, run_id, tasks)
+        # resume support: a run that already has tasks was interrupted mid-flight —
+        # skip decomposition and let the scheduler reclaim + continue. Decompose
+        # inserts are atomic (db.add_tasks), so "has tasks" means "has ALL tasks".
+        if not db.list_tasks(conn, run_id):
+            router.start()  # resident for the whole run
+            import json
+            tasks = decompose(router, instruction, json.loads(run["reference_images"]),
+                              cfg["llm"]["temperature"], cfg["llm"]["max_tokens"])
+            insert_tasks(conn, run_id, tasks)
+        else:
+            router.start()
 
         scheduler = Scheduler(
             conn, run_id,
@@ -61,3 +67,17 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
             coder.stop()
         if router:
             router.stop()
+
+
+def resume_incomplete_runs(cfg: dict, conn) -> list[str]:
+    """Continue every run interrupted by a kill/shutdown/power cut. Called by the
+    GUI on startup and by `python run.py resume`. Returns the resumed run ids."""
+    resumed = []
+    for run_id in db.incomplete_runs(conn):
+        print(f"[resume] continuing run {run_id}")
+        try:
+            execute_run(cfg, conn, run_id)
+        except Exception as e:
+            print(f"[resume] run {run_id} failed: {e}")
+        resumed.append(run_id)
+    return resumed

@@ -7,6 +7,7 @@ Network-bound tasks (rig_animate) run in a background lane alongside GPU waves;
 assemble tasks are CPU-only and run between waves.
 """
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Callable
@@ -48,6 +49,11 @@ class Scheduler:
     # -- public ---------------------------------------------------------------
 
     def run(self) -> None:
+        # crash-safe resume: anything left in_progress by a kill/power cut goes
+        # back to pending (attempts survive, so crash-loops still exhaust)
+        reclaimed = db.reclaim_stale(self.conn, self.run_id)
+        if reclaimed:
+            print(f"[resume] run {self.run_id}: reclaimed {reclaimed} interrupted task(s)")
         db.set_run_status(self.conn, self.run_id, "in_progress")
         try:
             while not db.run_finished(self.conn, self.run_id):
@@ -90,7 +96,9 @@ class Scheduler:
             setup = self.wave_setup.get(wave)
             teardown = self.wave_teardown.get(wave)
             if setup:
+                t0 = time.monotonic()
                 setup()  # load the model once for the whole wave
+                db.record_duration(self.conn, f"load:{wave}", time.monotonic() - t0)
             try:
                 while ready:
                     for task in ready:
@@ -146,8 +154,11 @@ class Scheduler:
                            error=f"no executor for type {task['type']!r}")
             return
         out_dir = self.workspace / "artifacts" / task["id"]
-        last_error = ""
-        for attempt in range(1, self.max_attempts + 1):
+        last_error = task.get("error", "")
+        t0 = time.monotonic()
+        # attempts persist across process death: resume continues the count
+        # instead of granting a crash-looping task infinite retries
+        for attempt in range(task.get("attempts", 0) + 1, self.max_attempts + 1):
             db.update_task(self.conn, task["id"], attempts=attempt)
             try:
                 # pass the previous failure so the executor can prompt a fix,
@@ -167,6 +178,17 @@ class Scheduler:
             if ok:
                 db.update_task(self.conn, task["id"], status="done",
                                output_path=";".join(str(p) for p in outputs), error="")
+                db.record_duration(self.conn, task["type"], time.monotonic() - t0)
+                self._print_eta()
                 return
             last_error = detail
-        db.update_task(self.conn, task["id"], status="failed", error=last_error)
+        db.update_task(self.conn, task["id"], status="failed",
+                       error=last_error or f"exhausted {self.max_attempts} attempts")
+        self._print_eta()
+
+    def _print_eta(self) -> None:
+        from . import eta  # local import: eta imports this module's wave maps
+        try:
+            print(eta.line(self.conn, self.run_id, self.wave_order), flush=True)
+        except Exception:
+            pass  # an ETA hiccup must never take down the run

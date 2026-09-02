@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_run_status ON tasks(run_id, status);
+CREATE TABLE IF NOT EXISTS durations (
+    kind TEXT NOT NULL,
+    seconds REAL NOT NULL,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_durations_kind ON durations(kind, ts);
 """
 
 
@@ -56,6 +62,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")  # survive power loss, throughput is irrelevant here
     conn.executescript(_SCHEMA)
     return conn
 
@@ -156,3 +163,61 @@ def run_finished(conn, run_id: str) -> bool:
         return False
     # remaining pending tasks are blocked by failed deps forever
     return True
+
+
+@_locked
+def add_tasks(conn, run_id: str, rows: list[tuple]) -> None:
+    """Atomic bulk insert: (task_id, type, spec_dict, depends_on_list) rows.
+    All-or-nothing so a crash mid-decompose never leaves a half-inserted run."""
+    for _, type_, _, _ in rows:
+        if type_ not in TASK_TYPES:
+            raise ValueError(f"unknown task type {type_!r}, expected one of {TASK_TYPES}")
+    now = time.time()
+    with conn:  # one transaction
+        conn.executemany(
+            "INSERT INTO tasks (id, run_id, type, spec, depends_on, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            [(tid, run_id, type_, json.dumps(spec), json.dumps(deps), now, now)
+             for tid, type_, spec, deps in rows])
+
+
+@_locked
+def reclaim_stale(conn, run_id: str | None = None) -> int:
+    """Reset in_progress tasks to pending after a crash/kill. Attempts are kept,
+    so a task that keeps killing the process still exhausts max_attempts."""
+    q = "UPDATE tasks SET status='pending', updated_at=? WHERE status='in_progress'"
+    args: tuple = (time.time(),)
+    if run_id:
+        q += " AND run_id=?"
+        args += (run_id,)
+    cur = conn.execute(q, args)
+    conn.commit()
+    return cur.rowcount
+
+
+@_locked
+def incomplete_runs(conn) -> list[str]:
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM runs WHERE status IN ('pending','in_progress') ORDER BY created_at")]
+
+
+@_locked
+def record_duration(conn, kind: str, seconds: float) -> None:
+    conn.execute("INSERT INTO durations (kind, seconds, ts) VALUES (?,?,?)",
+                 (kind, seconds, time.time()))
+    conn.commit()
+
+
+@_locked
+def duration_stats(conn, kind: str, window: int = 50) -> dict | None:
+    """Median and p90 of the most recent samples for this kind, or None."""
+    rows = [r["seconds"] for r in conn.execute(
+        "SELECT seconds FROM durations WHERE kind=? ORDER BY ts DESC LIMIT ?",
+        (kind, window))]
+    if not rows:
+        return None
+    rows.sort()
+    def q(p):
+        i = min(len(rows) - 1, max(0, round(p * (len(rows) - 1))))
+        return rows[i]
+    return {"n": len(rows), "p50": q(0.5), "p90": q(0.9)}

@@ -7,10 +7,26 @@ from pathlib import Path
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from . import config, db
-from .orchestrate import execute_run, start_run
+from . import config, db, eta
+from .orchestrate import execute_run, resume_incomplete_runs, start_run
 
-app = FastAPI(title="ai-game-dev-pipeline")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    """Crash-safe restart: any run interrupted by kill/shutdown/power cut
+    continues automatically when the GUI comes back up."""
+    def worker():
+        c = db.connect(cfg["paths"]["db"])
+        with _run_lock:
+            resume_incomplete_runs(cfg, c)
+    if db.incomplete_runs(conn()):
+        threading.Thread(target=worker, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="ai-game-dev-pipeline", lifespan=_lifespan)
 cfg = config.load()
 _conn = None
 # one GPU, one run at a time — a second upload queues behind the active run
@@ -57,6 +73,14 @@ async function refresh(){
   for(const r of runs){
     const tasks=await (await fetch('/api/runs/'+r.id+'/tasks')).json();
     html+=`<h2>run ${r.id} — ${r.status}${r.error?' — '+r.error:''}</h2>`;
+    if(r.status==='in_progress'||r.status==='pending'){
+      const e=await (await fetch('/api/runs/'+r.id+'/eta')).json();
+      const pct=e.total_tasks?Math.round(100*e.done_tasks/e.total_tasks):0;
+      const waves=e.breakdown.map(b=>`${b.wave}: ${fmt(b.seconds_p50)}`).join(' · ');
+      html+=`<div class=eta><progress max=100 value=${pct}></progress> `+
+        `${e.done_tasks}/${e.total_tasks} tasks — ETA ${fmt(e.seconds_p50)}`+
+        `–${fmt(e.seconds_p90)} <small>(${waves}) [${e.confidence}]</small></div>`;
+    }
     html+='<table><tr><th>id</th><th>type</th><th>status</th><th>attempts</th><th>output</th><th>error</th></tr>';
     for(const t of tasks)html+=`<tr class=${t.status}><td>${t.id}</td><td>${t.type}</td>`+
       `<td>${t.status}</td><td>${t.attempts}</td><td>${t.output_path}</td><td>${t.error}</td></tr>`;
@@ -64,6 +88,8 @@ async function refresh(){
   }
   document.getElementById('runs').innerHTML=html;
 }
+function fmt(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';
+  return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
 refresh();setInterval(refresh,5000);
 </script></body></html>"""
 
@@ -115,3 +141,10 @@ def run_tasks(run_id: str):
     for t in tasks:
         t["spec"] = json.dumps(t["spec"])[:200]
     return JSONResponse(tasks)
+
+
+@app.get("/api/runs/{run_id}/eta")
+def run_eta(run_id: str):
+    return JSONResponse(eta.estimate(conn(), run_id, cfg["scheduler"]["wave_order"]))
+
+
