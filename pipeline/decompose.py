@@ -1,6 +1,7 @@
 """Stage 1: resident router LLM turns instruction.md into a typed, dependency-aware
 task list, which is inserted into the SQLite queue."""
 import json
+import re
 
 from . import db
 from .adapters.llm import LlamaServer, extract_json
@@ -39,6 +40,26 @@ Rules:
   "knockback": [x, y], "tolerance": n}}}}. Frame counts are at 60fps. That task
   will be graded by a headless simulation against these exact numbers.
 - Reference images uploaded by the user: {ref_note}
+
+Example (a different, minimal game — copy the STRUCTURE, not the content):
+[
+ {{"id": "hero_art", "type": "design_2d", "depends_on": [],
+   "spec": {{"prompt": "a knight, solo, full body, centered, plain background",
+             "purpose": "concept for the hero mesh"}}}},
+ {{"id": "hero_mesh", "type": "design_3d", "depends_on": ["hero_art"],
+   "spec": {{"prompt": "the knight as a game-ready mesh", "concept_from": "hero_art"}}}},
+ {{"id": "hero_anim", "type": "rig_animate", "depends_on": ["hero_mesh"],
+   "spec": {{"mesh_from": "hero_mesh", "body_plan": "humanoid",
+             "animations": ["idle", "walk"], "extras": []}}}},
+ {{"id": "player", "type": "code", "depends_on": ["hero_anim"],
+   "spec": {{"file": "scripts/player.gd",
+             "description": "CharacterBody3D controller: WASD moves, camera follows"}}}},
+ {{"id": "level", "type": "code", "depends_on": [],
+   "spec": {{"file": "scenes/main.tscn",
+             "description": "main scene: ground plane, light, spawns the player"}}}},
+ {{"id": "build", "type": "assemble", "depends_on": ["hero_art", "hero_mesh",
+   "hero_anim", "player", "level"], "spec": {{"export_preset": "Windows Desktop"}}}}
+]
 
 Game description:
 ---
@@ -124,6 +145,11 @@ def repair_task_list(tasks) -> None:
                 deps.add(v)
         if t.get("type") == "assemble":
             deps = ids - {t.get("id")}
+        if t.get("type") == "code" and not t["spec"].get("file"):
+            # a consistent invented path beats a rejected plan; the coder writes
+            # whatever file it is told to
+            slug = re.sub(r"[^a-z0-9_]+", "_", str(t.get("id", "task")).lower())
+            t["spec"]["file"] = f"scripts/{slug}.gd"
         t["depends_on"] = sorted(deps)
 
 
