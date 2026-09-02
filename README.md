@@ -10,7 +10,7 @@ original fighting-game demo, but nothing about the game is hardcoded: the game
 arrives as an instruction file through the GUI, gets decomposed into a typed
 task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-- **Version:** 0.4.0 (semver; git tags `vX.Y.Z`)
+- **Version:** 0.4.1 (semver; git tags `vX.Y.Z`)
 - **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
 - **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
   writes is reviewable plain text; headless import/export)
