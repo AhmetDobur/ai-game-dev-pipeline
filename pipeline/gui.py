@@ -48,8 +48,18 @@ td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;font-size:.9rem}
 .done{background:#d4f7d4}.failed{background:#f7d4d4}.in_progress{background:#fdf3c9}
 #drop{border:2px dashed #999;padding:1.5rem;border-radius:8px;margin:1rem 0}
 button{padding:.5rem 1.2rem;font-size:1rem}
+#livewrap{margin:1rem 0}
+#livehdr{font-size:.85rem;color:#555;margin-bottom:.3rem}
+#live{background:#0d1117;color:#3fb950;font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:.8rem;line-height:1.35;padding:.8rem 1rem;border-radius:8px;height:22rem;
+  overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0}
+#live:empty::after{content:'idle — waiting for a run';color:#666}
 </style></head><body>
 <h1>AI game pipeline</h1>
+<div id=livewrap>
+  <div id=livehdr>live output</div>
+  <pre id=live></pre>
+</div>
 <div id=drop>
   <form id=f>
     <p>instruction.md: <input type=file name=instruction accept=".md,.txt" required></p>
@@ -91,7 +101,18 @@ async function refresh(){
 }
 function fmt(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';
   return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
+async function pollLive(){
+  try{
+    const l=await (await fetch('/api/live')).json();
+    const el=document.getElementById('live');
+    document.getElementById('livehdr').textContent=
+      l.run_id?('live output — run '+l.run_id+(l.header?' — '+l.header:'')):'live output';
+    const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<40;
+    if(el.textContent!==l.text){el.textContent=l.text;if(atBottom)el.scrollTop=el.scrollHeight;}
+  }catch(e){}
+}
 refresh();setInterval(refresh,5000);
+pollLive();setInterval(pollLive,1000);
 </script></body></html>"""
 
 
@@ -147,5 +168,23 @@ def run_tasks(run_id: str):
 @app.get("/api/runs/{run_id}/eta")
 def run_eta(run_id: str):
     return JSONResponse(eta.estimate(conn(), run_id, cfg["scheduler"]["wave_order"]))
+
+
+@app.get("/api/live")
+def live():
+    """Live output of the active run (the model writing code/plan right now)."""
+    from . import livelog
+    row = conn().execute(
+        "SELECT id FROM runs WHERE status='in_progress' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return JSONResponse({"run_id": None, "header": "", "text": ""})
+    return JSONResponse({"run_id": row["id"], **livelog.get(row["id"])})
+
+
+@app.get("/api/runs/{run_id}/live")
+def run_live(run_id: str):
+    from . import livelog
+    return JSONResponse({"run_id": run_id, **livelog.get(run_id)})
 
 

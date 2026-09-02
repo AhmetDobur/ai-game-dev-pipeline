@@ -78,12 +78,16 @@ def build_executors(cfg: dict, workspace: Path,
             produced = [fd_path, test_dst]
             frame_data_note = COMBAT_SIM_CONTRACT.format(
                 frame_data=json.dumps(spec["frame_data"], indent=1)) + "\n"
+        from . import livelog
+        livelog.start(task["run_id"], f"coding {spec['file']}"
+                      + (f" (retry {task['attempts']})" if task.get("last_error") else ""))
         reply = coder.chat(
             [{"role": "user", "content": CODE_PROMPT.format(
                 file=spec["file"], description=spec["description"],
                 frame_data_note=frame_data_note, fix_note=fix_note)}],
             temperature=cfg["llm"]["temperature"], max_tokens=cfg["llm"]["max_tokens"],
-            timeout_s=cfg["llm"]["request_timeout_s"])
+            timeout_s=cfg["llm"]["request_timeout_s"],
+            on_token=livelog.token_sink(task["run_id"]))
         path = game_dir / spec["file"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_extract_block(reply), encoding="utf-8")

@@ -38,11 +38,11 @@ Reply with ONLY a JSON array of tasks."""
 
 
 def decompose(router: LlamaServer, instruction: str, reference_images: list[str],
-              temperature: float = 0.6, max_tokens: int = 4096) -> list[dict]:
+              temperature: float = 0.6, max_tokens: int = 4096, on_token=None) -> list[dict]:
     ref_note = ", ".join(reference_images) if reference_images else "none"
     prompt = DECOMPOSE_PROMPT.format(instruction=instruction, ref_note=ref_note)
     reply = router.chat([{"role": "user", "content": prompt}],
-                        temperature=temperature, max_tokens=max_tokens)
+                        temperature=temperature, max_tokens=max_tokens, on_token=on_token)
     tasks = extract_json(reply)
     validate_task_list(tasks)
     return tasks

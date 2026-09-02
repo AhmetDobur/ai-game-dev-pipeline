@@ -29,7 +29,7 @@ def _fake_godot(tmp_path, script: str) -> str:
 def test_code_executor_materializes_table_grader_and_contract(tmp_path):
     coder = FakeCoder()
     execs = build_executors(load(), tmp_path, coder)
-    task = {"id": "t1", "spec": {"file": "scripts/combat_sim.gd",
+    task = {"id": "t1", "run_id": "r1", "spec": {"file": "scripts/combat_sim.gd",
                                  "description": "combat", "frame_data": FRAME_DATA}}
     produced = execs["code"](task, tmp_path / "out")
     game = tmp_path / "game"

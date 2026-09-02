@@ -31,7 +31,9 @@ def main():
         import uvicorn
         uvicorn.run("pipeline.gui:app", host=cfg["gui"]["host"], port=cfg["gui"]["port"])
     elif args.cmd == "run":
+        from pipeline import livelog
         from pipeline.orchestrate import execute_run, start_run
+        livelog.tee_stdout = True   # stream the model's output to this terminal
         run_id = start_run(cfg, conn, args.instruction, args.ref)
         print(f"run {run_id}")
         execute_run(cfg, conn, run_id)

@@ -1,3 +1,3 @@
 """AI game development pipeline — wave-scheduled, single-GPU, game-agnostic."""
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

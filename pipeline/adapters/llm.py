@@ -59,15 +59,47 @@ class LlamaServer:
             return False
 
     def chat(self, messages: list[dict], temperature: float = 0.6,
-             max_tokens: int = 4096, timeout_s: int = 1200) -> str:
-        r = requests.post(
-            f"{self.base_url}/v1/chat/completions",
-            json={"model": "local", "messages": messages,
-                  "temperature": temperature, "max_tokens": max_tokens},
-            timeout=timeout_s,
-        )
+             max_tokens: int = 4096, timeout_s: int = 1200,
+             on_token=None) -> str:
+        """Return the full reply. If on_token is given, stream tokens to it as
+        they arrive (for live view) and still return the assembled text."""
+        body = {"model": "local", "messages": messages,
+                "temperature": temperature, "max_tokens": max_tokens}
+        if on_token is None:
+            r = requests.post(f"{self.base_url}/v1/chat/completions", json=body,
+                              timeout=timeout_s)
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"] or ""
+        body["stream"] = True
+        r = requests.post(f"{self.base_url}/v1/chat/completions", json=body,
+                          timeout=timeout_s, stream=True)
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"] or ""
+        parts = []
+        for piece in iter_sse_content(r.iter_lines()):
+            parts.append(piece)
+            on_token(piece)
+        return "".join(parts)
+
+
+def iter_sse_content(lines):
+    """Yield assistant-content deltas from an OpenAI-style SSE stream.
+    `lines` is an iterable of bytes/str lines (requests' iter_lines())."""
+    for raw in lines:
+        if not raw:
+            continue
+        line = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            delta = json.loads(data)["choices"][0].get("delta", {})
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
+        content = delta.get("content")
+        if content:
+            yield content
 
 
 def extract_json(text: str) -> dict | list:

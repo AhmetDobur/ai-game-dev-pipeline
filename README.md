@@ -10,7 +10,7 @@ original fighting-game demo, but nothing about the game is hardcoded: the game
 arrives as an instruction file through the GUI, gets decomposed into a typed
 task graph, and is executed in **model waves** sized to one 24GB GPU.
 
-- **Version:** 0.4.1 (semver; git tags `vX.Y.Z`)
+- **Version:** 0.5.0 (semver; git tags `vX.Y.Z`)
 - **Target box:** Windows, Titan RTX 24GB, i5-14600K, 32GB RAM
 - **Engine:** Godot 4.x (text-first `.tscn`/GDScript — everything the coder LLM
   writes is reviewable plain text; headless import/export)
@@ -145,7 +145,8 @@ pipeline/
   validate.py      objective per-branch validators
   eta.py           learned wave-aware ETA (p50–p90 band from run history)
   watch.py         inbox auto-start: claim-by-rename, sibling refs, reconcile
-  gui.py           FastAPI page: upload, live task table, ETA, auto-resume + watch
+  livelog.py       in-memory live output buffer (model tokens, per run)
+  gui.py           FastAPI page: live output panel, task table, ETA, resume + watch
   adapters/
     llm.py         llama-server lifecycle + chat + Qwen2.5 <tools> shim
     comfy.py       ComfyUI /prompt → poll /history → download outputs
@@ -240,9 +241,14 @@ numbers right and the feel is right.
 
 ### 3. Watch it
 
-- GUI: per-run progress bar + p50–p90 ETA + the task table.
-- Terminal: an `[eta]` line prints after every task; `python run.py status`
-  lists runs, and `python run.py status <run_id>` shows every task's state.
+- **Live output panel (GUI):** a terminal-style pane at the top streams the
+  model's tokens as it happens — you literally watch it plan the task list, then
+  write each `.gd` file line by line (the header shows what it's coding, e.g.
+  `coding scripts/player.gd`). Updates ~1/sec, auto-scrolls.
+- GUI also shows a per-run progress bar + p50–p90 ETA + the task table.
+- **Terminal:** `python run.py run ...` tees the same live stream to stdout, so
+  you see it coding in the console too. An `[eta]` line prints after each task;
+  `python run.py status [run_id]` shows run/task state and ETA.
 
 ### 4. Get the build
 

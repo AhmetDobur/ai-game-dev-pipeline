@@ -38,8 +38,11 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
         if not db.list_tasks(conn, run_id):
             router.start()  # resident for the whole run
             import json
+            from . import livelog
+            livelog.start(run_id, "planning tasks from instruction.md")
             tasks = decompose(router, instruction, json.loads(run["reference_images"]),
-                              cfg["llm"]["temperature"], cfg["llm"]["max_tokens"])
+                              cfg["llm"]["temperature"], cfg["llm"]["max_tokens"],
+                              on_token=livelog.token_sink(run_id))
             insert_tasks(conn, run_id, tasks)
         else:
             router.start()
