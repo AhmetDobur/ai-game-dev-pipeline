@@ -16,6 +16,14 @@ Write the complete content of `{file}` for a Godot 4 project.
 What it must do:
 {description}
 
+Godot 4 GDScript ONLY — never Godot 3 API. The renames you MUST respect:
+deg2rad->deg_to_rad, rad2deg->rad_to_deg, BUTTON_*->MOUSE_BUTTON_*,
+File->FileAccess, Directory->DirAccess, JSON.parse(s)->JSON.parse_string(s),
+KinematicBody->CharacterBody3D (velocity is built in; move_and_slide() takes
+no arguments), Spatial->Node3D, onready var->@onready var, export->@export,
+yield->await, .instance()->.instantiate(), OS.get_ticks_msec()->Time.get_ticks_msec(),
+rand_range(a,b)->randf_range(a,b), Input singleton constants unchanged.
+
 {frame_data_note}{fix_note}Reply with ONLY the file content in a single fenced code block."""
 
 # The CombatSim contract lets the pipeline grade timing with its own static
