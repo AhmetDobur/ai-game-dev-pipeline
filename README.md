@@ -376,27 +376,31 @@ apply to its job. The same model scored 13/14 on a hard concurrency benchmark
 where the 80B MoE deadlocked at 0/14. The `<tools>` shim stays in `llm.py` for
 any future tool-calling use; it is not on the coder path.
 
-### 4. ComfyUI (SDXL + TRELLIS)
+### 4. ComfyUI (SDXL + TRELLIS.2)
 
-```bash
-git clone https://github.com/comfyanonymous/ComfyUI C:\ComfyUI
-cd C:\ComfyUI && python -m venv venv && venv\Scripts\pip install -r requirements.txt
-```
+Use the **portable build** — it ships its own Python + CUDA torch, so the
+system Python version never matters. Grab
+`ComfyUI_windows_portable_nvidia_cu126.7z` from the ComfyUI releases page and
+extract (cu126 is the safe pick for Turing cards like the Titan RTX).
 
 - **SDXL**: download `sd_xl_base_1.0.safetensors` into
   `ComfyUI\models\checkpoints\`. The bundled `workflows/sdxl.json` works as-is
   (1024×1024, DPM++ 2M Karras, 30 steps). Style-lock via IP-Adapter/LoRA can
   be added to that JSON later without touching pipeline code.
-- **TRELLIS**: the roughest install of the stack on native Windows (custom
-  CUDA ops). Use a ComfyUI TRELLIS custom-node pack (install via ComfyUI
-  Manager), build the image→3D graph in the ComfyUI editor, then
-  **Workflow → Export (API)** and save it over `workflows/trellis.json`,
-  putting `{{prompt}}` / `{{image}}` where the conditioning goes.
-  `workflows/trellis.json` in this repo is a placeholder that fails loudly
-  until you do this.
-- Run ComfyUI before pipeline runs: `venv\Scripts\python main.py --listen 127.0.0.1`
-  (default port 8188 matches `pipeline.toml`). The pipeline calls
-  `POST /free` between waves so SDXL/TRELLIS don't fight the coder for VRAM.
+- **TRELLIS.2** (image→3D, MIT — commercial-ok): **native in current ComfyUI**,
+  no custom-node pack needed. Download the four weights from
+  `huggingface.co/Comfy-Org/TRELLIS.2` into the matching model folders:
+  `diffusion_models/trellis_2_bf16.safetensors`,
+  `vae/trellis_2_shape_vae_bf16.safetensors`,
+  `diffusion_models/trellis_2_texture_vae_bf16.safetensors`,
+  `clip_vision/dino_v3_vit_l.safetensors`. The bundled
+  `workflows/trellis.json` targets these native nodes.
+- Run ComfyUI before pipeline runs:
+  `python_embeded\python.exe -s ComfyUI\main.py --listen 127.0.0.1`
+  (default port 8188 matches `pipeline.toml`), or let
+  `scripts\install_autostart.ps1 -ComfyDir <portable dir>` start it at every
+  logon. The pipeline calls `POST /free` between waves so SDXL/TRELLIS.2
+  don't fight the coder for VRAM.
 
 ### 5. Orpheus TTS
 
@@ -554,8 +558,9 @@ All knobs live in `pipeline.toml` (see `pipeline.toml.example`; defaults in
 - Combat feel is generated, not hand-tuned: rough functional demo first.
 - Style consistency across 2D→3D depends on doing a style-lock (IP-Adapter or
   project LoRA) in the SDXL workflow; skipping it produces mismatched assets.
-- `workflows/trellis.json` must be exported from your own ComfyUI install
-  once — TRELLIS node packs differ too much to ship a universal graph.
+- `workflows/trellis.json` targets ComfyUI's native TRELLIS.2 nodes; if your
+  ComfyUI predates the native integration, update it (or export your own API
+  workflow over that file).
 
 ## Steam notes (for the eventual demo)
 

@@ -139,12 +139,16 @@ def procedural_rig(mesh_obj, body_plan):
 # --- animation -------------------------------------------------------------
 
 def find_cmu_clip(cmu_dir, clip):
+    """Recursive name match: a clip named 'walk' hits any */`*walk*.bvh` under
+    cmu_dir. Raw CMU files are numbered (01_01.bvh) — rename or symlink the ones
+    you curate to descriptive names for them to be found."""
     if not cmu_dir or not os.path.isdir(cmu_dir):
         return None
-    for f in os.listdir(cmu_dir):
-        stem = os.path.splitext(f)[0].lower()
-        if f.lower().endswith(".bvh") and clip.lower() in stem:
-            return os.path.join(cmu_dir, f)
+    for base, _dirs, files in os.walk(cmu_dir):
+        for f in files:
+            stem = os.path.splitext(f)[0].lower()
+            if f.lower().endswith(".bvh") and clip.lower() in stem:
+                return os.path.join(base, f)
     return None
 
 

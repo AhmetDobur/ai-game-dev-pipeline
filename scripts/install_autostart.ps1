@@ -21,7 +21,9 @@ $pythonw  = @("$repo\.venv\Scripts\pythonw.exe", "$repo\venv\Scripts\pythonw.exe
 $runpy    = Join-Path $repo "run.py"
 
 if (-not $pythonw) {
-    throw "venv not found — create it first: python -m venv .venv; .venv\Scripts\pip install -r requirements.txt"
+    # ASCII only in this file: PowerShell 5.1 reads BOM-less files as ANSI, and a
+    # UTF-8 em dash misreads as a curly quote that breaks parsing
+    throw "venv not found - create it first: python -m venv .venv; .venv\Scripts\pip install -r requirements.txt"
 }
 
 # `run.py gui` serves the page AND auto-resumes every interrupted run on startup
