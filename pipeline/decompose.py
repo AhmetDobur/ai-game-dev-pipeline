@@ -113,9 +113,11 @@ def repair_task_list(tasks) -> None:
         return
     ids = {t.get("id") for t in tasks if isinstance(t, dict)}
     for t in tasks:
-        if not isinstance(t, dict) or not isinstance(t.get("spec"), dict):
+        if not isinstance(t, dict):
             continue
-        deps = set(t.get("depends_on", []))
+        if not isinstance(t.get("spec"), dict):
+            t["spec"] = {}          # routers omit assemble's empty spec constantly
+        deps = set(t.get("depends_on") or [])
         for key in ("concept_from", "mesh_from"):
             v = t["spec"].get(key)
             if isinstance(v, str) and v in ids:
