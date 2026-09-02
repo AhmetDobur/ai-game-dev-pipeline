@@ -5,13 +5,15 @@ import pytest
 
 from pipeline import db
 from pipeline.adapters.llm import extract_json, parse_tool_call
-from pipeline.decompose import insert_tasks, validate_task_list
+from pipeline.decompose import insert_tasks, repair_task_list, validate_task_list
 from pipeline.validate import validate
 
 GOOD = [
     {"id": "art", "type": "design_2d", "depends_on": [], "spec": {"prompt": "p"}},
     {"id": "mesh", "type": "design_3d", "depends_on": ["art"], "spec": {"prompt": "p"}},
-    {"id": "build", "type": "assemble", "depends_on": ["mesh"], "spec": {}},
+    {"id": "main", "type": "code", "depends_on": [], "spec": {"file": "main.gd",
+                                                              "description": "d"}},
+    {"id": "build", "type": "assemble", "depends_on": ["mesh", "main"], "spec": {}},
 ]
 
 
@@ -26,6 +28,30 @@ def test_validate_task_list_accepts_good_and_rejects_bad():
         validate_task_list([])
 
 
+def test_structural_rules_and_repair():
+    # the graph the 7B router actually emitted once: no code, empty assemble deps,
+    # rig pointing at a design_2d — every one must be caught or repaired
+    bad = [
+        {"id": "char", "type": "design_2d", "depends_on": [], "spec": {"prompt": "p"}},
+        {"id": "rig", "type": "rig_animate", "depends_on": [],
+         "spec": {"mesh_from": "char"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(bad)
+    assert set(bad[2]["depends_on"]) == {"char", "rig"}   # assemble deps rebuilt
+    assert bad[1]["depends_on"] == ["char"]               # mesh_from implies dep
+    with pytest.raises(ValueError, match="code"):
+        validate_task_list(bad)
+    good = [dict(t) for t in GOOD]
+    good.append({"id": "rig", "type": "rig_animate", "depends_on": ["mesh"],
+                 "spec": {"mesh_from": "mesh"}})
+    good[3] = dict(good[3], depends_on=["mesh", "main", "rig"])
+    validate_task_list(good)
+    good[4] = dict(good[4], spec={"mesh_from": "art"})    # rig on a 2d image
+    with pytest.raises(ValueError, match="design_3d"):
+        validate_task_list(good)
+
+
 def test_insert_tasks_scopes_ids_per_run(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     r1 = db.create_run(conn, "a.md")
@@ -33,7 +59,7 @@ def test_insert_tasks_scopes_ids_per_run(tmp_path):
     insert_tasks(conn, r1, GOOD)
     insert_tasks(conn, r2, GOOD)  # same decomposer ids, no collision
     t1 = db.list_tasks(conn, r1)
-    assert len(t1) == 3 and len(db.list_tasks(conn, r2)) == 3
+    assert len(t1) == len(GOOD) and len(db.list_tasks(conn, r2)) == len(GOOD)
     mesh = next(t for t in t1 if t["type"] == "design_3d")
     assert mesh["depends_on"] == [f"{r1}-art"]
 

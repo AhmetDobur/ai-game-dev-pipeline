@@ -52,11 +52,23 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
               temperature: float = 0.6, max_tokens: int = 4096, on_token=None) -> list[dict]:
     ref_note = ", ".join(reference_images) if reference_images else "none"
     prompt = DECOMPOSE_PROMPT.format(instruction=instruction, ref_note=ref_note)
-    reply = router.chat([{"role": "user", "content": prompt}],
-                        temperature=temperature, max_tokens=max_tokens, on_token=on_token)
-    tasks = extract_json(reply)
-    validate_task_list(tasks)
-    return tasks
+    messages = [{"role": "user", "content": prompt}]
+    last_err = None
+    for _ in range(3):  # a small router gets structure wrong; feed the error back
+        reply = router.chat(messages, temperature=temperature,
+                            max_tokens=max_tokens, on_token=on_token)
+        try:
+            tasks = extract_json(reply)
+            repair_task_list(tasks)
+            validate_task_list(tasks)
+            return tasks
+        except (ValueError, KeyError, TypeError) as e:
+            last_err = e
+            messages = messages[:1] + [
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": f"That task list is invalid: {e}. "
+                 "Reply with ONLY the corrected full JSON array."}]
+    raise ValueError(f"decomposition failed after 3 attempts: {last_err}")
 
 
 PATCH_PROMPT = """You are patching an EXISTING game. Do NOT rebuild what the change
@@ -94,6 +106,25 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
     return patch_tasks
 
 
+def repair_task_list(tasks) -> None:
+    """Deterministic fixes for mistakes every small router makes: spec references
+    (concept_from/mesh_from) imply dependencies, and assemble depends on everything."""
+    if not isinstance(tasks, list):
+        return
+    ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    for t in tasks:
+        if not isinstance(t, dict) or not isinstance(t.get("spec"), dict):
+            continue
+        deps = set(t.get("depends_on", []))
+        for key in ("concept_from", "mesh_from"):
+            v = t["spec"].get(key)
+            if isinstance(v, str) and v in ids:
+                deps.add(v)
+        if t.get("type") == "assemble":
+            deps = ids - {t.get("id")}
+        t["depends_on"] = sorted(deps)
+
+
 def validate_task_list(tasks) -> None:
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("decomposition is not a non-empty JSON array")
@@ -101,6 +132,7 @@ def validate_task_list(tasks) -> None:
     if len(ids) != len(set(ids)) or any(not i for i in ids):
         raise ValueError("task ids must be unique and non-empty")
     known = set(ids)
+    by_id = {t.get("id"): t for t in tasks}
     for t in tasks:
         if t.get("type") not in db.TASK_TYPES:
             raise ValueError(f"task {t.get('id')}: unknown type {t.get('type')!r}")
@@ -109,6 +141,31 @@ def validate_task_list(tasks) -> None:
         for dep in t.get("depends_on", []):
             if dep not in known:
                 raise ValueError(f"task {t.get('id')}: unknown dependency {dep!r}")
+    # structural rules — a graph that violates these cannot build a game
+    kinds = [t["type"] for t in tasks]
+    if kinds.count("assemble") != 1:
+        raise ValueError("exactly one assemble task is required")
+    if "code" not in kinds:
+        raise ValueError('at least one "code" task is required — the game has no'
+                         " scripts, scenes or player controller without them")
+    for t in tasks:
+        spec = t["spec"]
+        if t["type"] == "design_2d" and not spec.get("prompt"):
+            raise ValueError(f'design_2d {t["id"]}: spec needs a "prompt"')
+        if t["type"] == "design_3d":
+            if not spec.get("prompt"):
+                raise ValueError(f'design_3d {t["id"]}: spec needs a "prompt"')
+            c = spec.get("concept_from")
+            if c and by_id.get(c, {}).get("type") != "design_2d":
+                raise ValueError(f'design_3d {t["id"]}: concept_from must name a'
+                                 " design_2d task id")
+        if t["type"] == "rig_animate":
+            m = spec.get("mesh_from")
+            if by_id.get(m, {}).get("type") != "design_3d":
+                raise ValueError(f'rig_animate {t["id"]}: mesh_from must name a'
+                                 " design_3d task id (the mesh to rig)")
+        if t["type"] == "code" and not spec.get("file"):
+            raise ValueError(f'code {t["id"]}: spec needs a "file" path')
 
 
 def insert_tasks(conn, run_id: str, tasks: list[dict]) -> None:
