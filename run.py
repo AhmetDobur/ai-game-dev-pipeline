@@ -1,6 +1,16 @@
 """Entry point: python run.py gui | run <instruction.md> [--ref img ...] | status [run_id]"""
 import argparse
+import sys
 from pathlib import Path
+
+# under pythonw.exe (autostart scheduled task) there is no console: sys.stdout is
+# None and the first print() kills the process. Redirect to a log file instead.
+if sys.stdout is None or sys.stderr is None:
+    _dir = Path(__file__).parent / "workspace"
+    _dir.mkdir(parents=True, exist_ok=True)
+    _log = open(_dir / "pipeline.log", "a", buffering=1, encoding="utf-8")
+    sys.stdout = sys.stdout or _log
+    sys.stderr = sys.stderr or _log
 
 from pipeline import __version__, config, db
 

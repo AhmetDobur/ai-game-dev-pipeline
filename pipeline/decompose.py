@@ -28,6 +28,10 @@ Rules:
   real mocap/generated motion); every other creature is "nonhumanoid" (procedural
   motion). List any non-skeletal moving parts (a tail, an oversized jaw, wings) in
   "extras" — they get procedural secondary motion regardless of body_plan.
+- A design_2d prompt that feeds a design_3d MUST depict exactly ONE subject: full body,
+  centered, plain background, "solo" in the prompt. Never a character sheet, turnaround,
+  or multiple poses — the 3D stage reconstructs everything in frame, so three poses
+  become three meshes.
 - code tasks for the Godot project; exactly one final "assemble" task depending on everything.
 - When the game description contains combat timing tables (frame data), copy them
   VERBATIM into one code task with "file": "scripts/combat_sim.gd" as
