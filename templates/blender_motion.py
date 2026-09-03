@@ -220,6 +220,9 @@ def find_cmu_clip(cmu_dir, clip):
     return None
 
 
+PROVENANCE = {}      # clip -> how it was actually produced, written beside the glb
+
+
 def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
     """Path to a BVH for this humanoid clip (CMU exact match, else Kimodo), or None."""
     if body_plan != "humanoid":
@@ -227,6 +230,7 @@ def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
     bvh = find_cmu_clip(cmu_dir, clip)
     if bvh:
         print(f"[motion] {clip}: CMU clip {os.path.basename(bvh)}")
+        PROVENANCE[clip] = "mocap:" + os.path.basename(bvh)
         return bvh
     if kimodo_url:
         try:
@@ -239,6 +243,7 @@ def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
             with urllib.request.urlopen(req, timeout=600) as resp:
                 open(out, "wb").write(resp.read())
             print(f"[motion] {clip}: Kimodo generated")
+            PROVENANCE[clip] = "generated:kimodo"
             return out
         except Exception as e:  # noqa: BLE001
             print(f"[motion] {clip}: Kimodo failed, procedural instead: {e}")
@@ -391,6 +396,7 @@ def main():
                       out_dir)
         if not (bvh and retarget_onto(arm, bvh)):
             procedural_clip(arm, clip)          # base body motion (never leaves it static)
+            PROVENANCE[clip] = "procedural"     # retarget may have rejected the bvh too
         procedural_extras(arm, clip, extras)    # tail/jaw/wings on EVERY path
         act = arm.animation_data.action if arm.animation_data else None
         if act:
@@ -400,7 +406,32 @@ def main():
             track.strips.new(clip, int(act.frame_range[0]) + 1, act)
     if arm.animation_data:
         arm.animation_data.action = None        # export from NLA tracks only
-    export_glb(os.path.join(out_dir, "character.glb"))
+    out = os.path.join(out_dir, "character.glb")
+    export_glb(out)
+    # Provenance the finished .glb cannot carry: whether a clip is real mocap or
+    # a synthetic cycle looks identical inside the file, but it is exactly what
+    # someone asking to "make the animation more realistic" needs to know.
+    mesh_obj = next((o for o in bpy.context.scene.objects if o.type == "MESH"), None)
+    write_json(out + ".motion.json", {
+        "clips": {c: PROVENANCE.get(c, "procedural")
+                  for c in ARGS.get("animations", ["idle"])},
+        "body_plan": body_plan,
+        "extras": extras,
+        "bones": len(arm.data.bones),
+        "weighted_verts": sum(1 for v in mesh_obj.data.vertices
+                              if any(g.weight > 1e-6 for g in v.groups))
+                          if mesh_obj else 0,
+        "total_verts": len(mesh_obj.data.vertices) if mesh_obj else 0,
+    })
+
+
+def write_json(path, obj):
+    """Best-effort sidecar: a failed write must never fail the motion stage."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=1)
+    except Exception as e:      # noqa: BLE001
+        print(f"[motion] could not write {os.path.basename(path)}: {e}")
 
 
 if __name__ == "__main__":

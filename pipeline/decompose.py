@@ -230,9 +230,27 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
 
 
 PATCH_PROMPT = """You are patching an EXISTING game. Do NOT rebuild what the change
-doesn't touch. Here is what the game already contains (id — type — summary):
+doesn't touch.
+
+Here is what the game already contains. Each line is:
+  id — type — asked for: <what this task was told to make>
+                observed: <what it ACTUALLY produced, measured from its files>
 
 {manifest}
+
+"observed" is ground truth and "asked for" is only a request. They disagree
+often: a rig whose motion lookup missed still lists "idle, walk, run" in what it
+asked for, while what it observed is three procedural cycles.
+
+CHECK BEFORE YOU CHANGE. Work out which artifacts the instruction is about, read
+their observed facts, and target the one whose observed facts show the problem:
+- "make the animation more realistic" is about the rig_animate whose clips are
+  observed as procedural — not the mesh and not the concept art.
+- "the character does not move" is about a rig observed as NOT SKINNED.
+- "the shelf looks wrong" is about a mesh observed as a FLAT PLANE.
+If an observed line is empty, that artifact was never measured — do not invent
+what it contains. If the instruction names something no line mentions, ADD it.
+Never assume an artifact holds something its observed facts do not show.
 
 Apply ONLY this change:
 ---
@@ -253,15 +271,36 @@ Reference images uploaded by the user: {ref_note}"""
 def decompose_patch(router, manifest_rows: list[dict], instruction: str,
                     reference_images: list[str], temperature: float = 0.6,
                     max_tokens: int = 4096, on_token=None) -> list[dict]:
-    from .patch import validate_patch_list
-    lines = "\n".join(f"{m['id']} — {m['type']} — {m['summary']}" for m in manifest_rows)
+    from .patch import check_patch_grounding, validate_patch_list
+    lines = "\n".join(
+        f"{m['id']} — {m['type']} — asked for: {m['summary']}\n"
+        f"{' ' * 4}observed: {m.get('observed') or '(not measured)'}"
+        for m in manifest_rows)
     ref_note = ", ".join(reference_images) if reference_images else "none"
     prompt = PATCH_PROMPT.format(manifest=lines, instruction=instruction, ref_note=ref_note)
-    reply = router.chat([{"role": "user", "content": prompt}],
-                        temperature=temperature, max_tokens=max_tokens, on_token=on_token)
-    patch_tasks = extract_json(reply)
-    validate_patch_list(patch_tasks, {m["id"] for m in manifest_rows})
-    return patch_tasks
+    messages = [{"role": "user", "content": prompt}]
+    ids = {m["id"] for m in manifest_rows}
+    last_err, reply = None, ""
+    # same three-strike loop the fresh decomposition has had all along: a small
+    # router gets this wrong first time, and the grounding error is written to be
+    # read BY the router, so feeding it back is what makes the check useful
+    for _ in range(3):
+        raw = router.chat(messages, temperature=temperature,
+                          max_tokens=max_tokens, on_token=on_token)
+        reply = _THINK_RE.sub("", raw).strip() or raw
+        try:
+            patch_tasks = extract_json(reply)
+            validate_patch_list(patch_tasks, ids)
+            check_patch_grounding(patch_tasks, manifest_rows, instruction)
+            return patch_tasks
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            last_err = e
+            messages = messages[:1] + [
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": f"That patch is wrong: {e} "
+                 "Reply with ONLY the corrected full JSON array."}]
+    raise ValueError(f"patch decomposition failed after 3 attempts: {last_err}; "
+                     f"last reply tail: {reply[-500:]!r}")
 
 
 def _repair_ref_image(spec: dict, reference_images: list[str]) -> None:

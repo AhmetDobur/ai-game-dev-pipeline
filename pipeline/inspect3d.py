@@ -40,6 +40,47 @@ def verdict(mesh: Path) -> tuple[bool, str]:
     return True, "mesh ok"
 
 
+def gltf_doc(mesh: Path) -> dict | None:
+    """The JSON chunk of a .glb, or None when it cannot be read."""
+    import json as _json
+    import struct
+    try:
+        d = mesh.read_bytes()
+        if d[:4] != b"glTF":
+            return None            # .gltf/.obj etc -- not our business
+        n = struct.unpack_from("<I", d, 12)[0]
+        return _json.loads(d[20:20 + n])
+    except Exception:
+        return None                # unreadable -- never a rejection
+
+
+def clips(mesh: Path) -> list[dict]:
+    """Every animation in a .glb: name, duration in seconds, bones it moves.
+
+    Read from the file rather than from the task spec, because the spec records
+    what was ASKED FOR and this records what exists. They diverge constantly --
+    a requested clip whose mocap lookup missed still lands in the file, just
+    driven by a synthetic cycle instead.
+    """
+    doc = gltf_doc(mesh)
+    if not doc:
+        return []
+    acc = doc.get("accessors", [])
+    out = []
+    for a in doc.get("animations", []):
+        # duration = the largest input-accessor max across the clip's samplers
+        end = 0.0
+        for smp in a.get("samplers", []):
+            mx = acc[smp["input"]].get("max") if smp.get("input") is not None else None
+            if mx:
+                end = max(end, float(mx[0]))
+        targets = {ch["target"].get("node") for ch in a.get("channels", [])
+                   if ch.get("target")}
+        out.append({"name": a.get("name", "?"), "seconds": round(end, 2),
+                    "bones": len(targets)})
+    return out
+
+
 def has_skin(mesh: Path) -> bool | None:
     """Does this .glb bind its mesh to a skeleton? None when it cannot be read.
 
@@ -49,15 +90,8 @@ def has_skin(mesh: Path) -> bool | None:
     character slides about frozen in its rest pose. Blender emits exactly this
     when bone-heat weighting fails on non-manifold geometry.
     """
-    import json as _json
-    import struct
-    try:
-        d = mesh.read_bytes()
-        if d[:4] != b"glTF":
-            return None            # .gltf/.obj etc -- not our business
-        n = struct.unpack_from("<I", d, 12)[0]
-        doc = _json.loads(d[20:20 + n])
-    except Exception:
+    doc = gltf_doc(mesh)
+    if doc is None:
         return None                # unreadable -- never a rejection
     return bool(doc.get("skins")) and any(
         "skin" in node for node in doc.get("nodes", []))

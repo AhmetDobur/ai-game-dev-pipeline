@@ -576,3 +576,84 @@ def test_apse_stair_is_climbable_and_not_inside_the_platform():
     assert zs["Step2"] + 0.6 <= apse_front + 1e-6, "top step is inside the apse"
     assert zs["Step0"] < zs["Step1"] < zs["Step2"], "steps out of order"
     assert "StairRamp" in scene, "no walkable ramp over the risers"
+
+
+def _manifest_rows():
+    return [
+        {"id": "r-hero_art", "type": "design_2d", "summary": "a knight, solo",
+         "observed": "1024x1024 image"},
+        {"id": "r-hero_mesh", "type": "design_3d", "summary": "the knight mesh",
+         "observed": "size 0.9x1.8x0.6; 40213 faces"},
+        {"id": "r-hero_anim", "type": "rig_animate", "summary": "idle,walk,run",
+         "observed": "idle (procedural, 1.0s, 7 bones), walk (procedural, 1.0s, 7 bones)"},
+        {"id": "r-player", "type": "code", "summary": "scripts/player.gd",
+         "observed": "48 lines"},
+    ]
+
+
+def test_animation_instruction_must_touch_the_rig():
+    """The main mistake this guards: asked about the animation, the router goes
+    and rewrites the concept art instead."""
+    from pipeline.patch import check_patch_grounding
+    rows = _manifest_rows()
+    wrong = [{"target": "r-hero_art", "spec": {"prompt": "a more realistic knight"}}]
+    try:
+        check_patch_grounding(wrong, rows, "make the animation more realistic")
+        raise AssertionError("a patch that ignores the rig was accepted")
+    except ValueError as e:
+        # the message must hand the router the facts it needs to correct itself
+        assert "r-hero_anim" in str(e) and "procedural" in str(e)
+
+    right = [{"target": "r-hero_anim",
+              "spec": {"mesh_from": "r-hero_mesh", "body_plan": "humanoid",
+                       "animations": ["idle", "walk", "run"], "extras": []}}]
+    check_patch_grounding(right, rows, "make the animation more realistic")
+
+
+def test_grounding_allows_an_add_of_the_right_type():
+    from pipeline.patch import check_patch_grounding
+    add = [{"id": "new_anim", "type": "rig_animate", "depends_on": ["r-hero_mesh"],
+            "spec": {"mesh_from": "r-hero_mesh", "animations": ["attack"]}}]
+    check_patch_grounding(add, _manifest_rows(), "add an attack animation")
+
+
+def test_grounding_stays_quiet_when_the_instruction_is_ambiguous():
+    """Only unambiguous misses may fail a patch -- a false rejection burns three
+    router round-trips and then the whole revision."""
+    from pipeline.patch import check_patch_grounding, instruction_domains
+    rows = _manifest_rows()
+    # two domains named at once -> no opinion
+    assert len(instruction_domains("improve the mesh and the animation")) == 2
+    check_patch_grounding([{"target": "r-player", "spec": {"file": "scripts/player.gd",
+                                                           "description": "x"}}],
+                          rows, "improve the mesh and the animation")
+    # no domain named at all -> no opinion
+    check_patch_grounding([{"target": "r-player", "spec": {"file": "scripts/player.gd",
+                                                           "description": "x"}}],
+                          rows, "make the game better")
+    # domain named but the game has none of it -> no opinion
+    check_patch_grounding([{"target": "r-player", "spec": {"file": "scripts/player.gd",
+                                                           "description": "x"}}],
+                          [r for r in rows if r["type"] != "audio"],
+                          "add a voice line")
+
+
+def test_manifest_carries_observed_facts(tmp_path):
+    """The router must be shown what an artifact IS, not only what it was asked
+    to be -- the two diverge constantly."""
+    from pipeline.patch import manifest
+    glb = _glb(tmp_path / "character.glb", {
+        "asset": {"version": "2.0"},
+        "nodes": [{"mesh": 0, "name": "Mesh_0"}, {"name": "pelvis"}],
+        "meshes": [{"primitives": [{"attributes": {"JOINTS_0": 0}}]}],
+        "accessors": [{"max": [1.5]}],
+        "animations": [{"name": "run", "channels": [{"target": {"node": 1, "path": "rotation"}}],
+                        "samplers": [{"input": 0}]}],
+    })
+    rows = manifest([{"id": "a-anim", "type": "rig_animate",
+                      "spec": {"animations": ["idle", "walk", "run"]},
+                      "output_path": str(glb)}])
+    obs = rows[0]["observed"]
+    assert "run" in obs and "1.5s" in obs
+    assert "NOT SKINNED" in obs          # the spec would never have said so
+    assert rows[0]["summary"] == "idle,walk,run"   # what was asked for, unchanged

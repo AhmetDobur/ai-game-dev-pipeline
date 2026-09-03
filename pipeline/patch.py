@@ -43,13 +43,22 @@ def prepare_workspace(cfg, run_id: str, parent_id: str) -> None:
 
 
 def manifest(parent_rows: list[dict]) -> list[dict]:
-    """Compact view of what the game already contains, for the delta decomposer."""
+    """Compact view of what the game already contains, for the delta decomposer.
+
+    Carries BOTH what each task was asked to make (`summary`, read from its spec)
+    and what it actually produced (`observed`, measured from its output files).
+    The two disagree often enough that a router shown only the spec has to guess
+    which artifact an instruction like "make the animation more realistic" is
+    even about.
+    """
+    from .observe import facts_for
     out = []
     for t in parent_rows:
         s = t["spec"]
         summary = (s.get("file") or s.get("prompt") or s.get("text")
                    or ",".join(s.get("animations", [])) or s.get("export_preset") or "")
-        out.append({"id": t["id"], "type": t["type"], "summary": str(summary)[:80]})
+        out.append({"id": t["id"], "type": t["type"], "summary": str(summary)[:80],
+                    "observed": facts_for(t["type"], t.get("output_path", ""))})
     return out
 
 
@@ -188,3 +197,59 @@ def validate_patch_list(patch_tasks, manifest_ids: set[str]) -> None:
             for d in pt.get("depends_on", []):
                 if d not in known:
                     raise ValueError(f"ADD op {pt['id']!r}: unknown dependency {d!r}")
+
+
+# What a plainly-worded instruction is about. Deliberately coarse: this exists to
+# catch the MAIN mistake -- a router that was asked about the animation and went
+# and rewrote the concept art -- not to adjudicate subtle wording.
+_DOMAIN_WORDS = {
+    "rig_animate": ("animation", "animate", "anim ", "motion", "walk", "walking",
+                    "run ", "running", "idle", "rig", "skeleton", "movement",
+                    "moves", "moving"),
+    "design_2d": ("concept art", "artwork", "texture", "palette", "colour",
+                  "color", "art style"),
+    "design_3d": ("mesh", "model", "geometry", "sculpt", "silhouette",
+                  "proportions", "topology"),
+    "audio": ("sound", "audio", "voice", "music", "speech", "spoken"),
+    "code": ("script", "code", "controller", "gameplay", "combat", "input",
+             "camera", "logic"),
+}
+
+
+def instruction_domains(instruction: str) -> set[str]:
+    text = " " + (instruction or "").lower() + " "
+    return {kind for kind, words in _DOMAIN_WORDS.items()
+            if any(w in text for w in words)}
+
+
+def check_patch_grounding(patch_tasks, manifest_rows, instruction) -> None:
+    """Refuse a patch that ignores what the instruction is plainly about.
+
+    The router is shown each artifact's observed facts precisely so it can pick
+    the right one; this is the check that it actually did. It fires only when the
+    instruction names EXACTLY ONE domain and the game contains artifacts of that
+    domain and the patch touches none of them -- an unambiguous miss, not a
+    judgement call. The message names the candidates and their observed facts, so
+    the retry has everything it needs to correct itself.
+    """
+    domains = instruction_domains(instruction)
+    if len(domains) != 1:
+        return                      # ambiguous or silent -- do not second-guess
+    want = domains.pop()
+    candidates = [m for m in manifest_rows if m["type"] == want]
+    if not candidates:
+        return                      # nothing of that kind to target
+    by_id = {m["id"]: m for m in manifest_rows}
+    touched = {by_id[pt["target"]]["type"] for pt in patch_tasks
+               if "target" in pt and pt["target"] in by_id}
+    touched |= {pt.get("type") for pt in patch_tasks if "target" not in pt}
+    if want in touched:
+        return
+    listing = "; ".join(
+        f"{m['id']} (observed: {m.get('observed') or 'not measured'})"
+        for m in candidates[:4])
+    raise ValueError(
+        f"the instruction is about {want}, but this patch touches none. "
+        f"The {want} artifacts in this game are: {listing}. "
+        f"Target the one whose observed facts show the problem, or explain the "
+        f"change as an ADD of type {want}.")
