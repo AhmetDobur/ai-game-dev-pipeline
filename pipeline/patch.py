@@ -58,7 +58,10 @@ def manifest(parent_rows: list[dict]) -> list[dict]:
         summary = (s.get("file") or s.get("prompt") or s.get("text")
                    or ",".join(s.get("animations", [])) or s.get("export_preset") or "")
         out.append({"id": t["id"], "type": t["type"], "summary": str(summary)[:80],
-                    "observed": facts_for(t["type"], t.get("output_path", ""))})
+                    "observed": facts_for(t["type"], t.get("output_path", "")),
+                    # carried for the deterministic repairs, never rendered into
+                    # the prompt -- the router sees only the four fields above
+                    "spec": s if isinstance(s, dict) else {}})
     return out
 
 
@@ -253,3 +256,99 @@ def check_patch_grounding(patch_tasks, manifest_rows, instruction) -> None:
         f"The {want} artifacts in this game are: {listing}. "
         f"Target the one whose observed facts show the problem, or explain the "
         f"change as an ADD of type {want}.")
+
+
+# Required spec keys per task type, for patch ops. The fresh decomposer gets these
+# from its prompt's worked example; a patch op arrives with no such scaffolding and
+# a small router invents plausible-looking fields ("skin_to_rig": true) instead.
+_REQUIRED_SPEC = {
+    "design_2d": ("prompt",),
+    "design_3d": ("prompt",),
+    "rig_animate": ("mesh_from", "body_plan", "animations"),
+    "code": ("file", "description"),
+    "audio": ("text",),
+}
+
+
+def repair_patch_list(patch_tasks, manifest_rows) -> None:
+    """Resolve the ids a router actually writes onto the ids that exist.
+
+    The manifest shows run-scoped ids ("349edb5bf375-hero_mesh") and the router
+    writes the bare decomposer id ("hero_mesh") -- which is how it was originally
+    told to name things, and how every example it has ever seen looks. Rejecting
+    that threw away an otherwise correct patch three times in a row. A bare id is
+    accepted whenever it resolves to exactly ONE manifest id; an ambiguous one is
+    left alone for the validator to report.
+    """
+    if not isinstance(patch_tasks, list):
+        return
+    known = {m["id"] for m in manifest_rows}
+    new_ids = {pt["id"] for pt in patch_tasks
+               if isinstance(pt, dict) and "target" not in pt and pt.get("id")}
+
+    def resolve(value):
+        if not isinstance(value, str) or value in known or value in new_ids:
+            return value
+        hits = [k for k in known if k.endswith("-" + value)]
+        return hits[0] if len(hits) == 1 else value
+
+    def walk(v):
+        if isinstance(v, str):
+            return resolve(v)
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        return v
+
+    for pt in patch_tasks:
+        if not isinstance(pt, dict):
+            continue
+        if "target" in pt:
+            pt["target"] = resolve(pt["target"])
+        pt["depends_on"] = [resolve(d) for d in pt.get("depends_on", [])]
+        if isinstance(pt.get("spec"), dict):
+            pt["spec"] = walk(pt["spec"])
+
+
+def collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs) -> None:
+    """An ADD that rebuilds something the game already has is a MODIFY of it.
+
+    Told the rig is unskinned, a router adds a NEW rig_animate for the same mesh
+    rather than fixing the existing one -- which would ship the character twice.
+    Only an exact same-type, same-source match is collapsed.
+    """
+    if not isinstance(patch_tasks, list):
+        return
+    by_type_src = {}
+    for m in manifest_rows:
+        spec = parent_specs.get(m["id"], {})
+        src = spec.get("mesh_from") or spec.get("concept_from") or spec.get("file")
+        if src:
+            by_type_src[(m["type"], src)] = m["id"]
+    for pt in patch_tasks:
+        if not isinstance(pt, dict) or "target" in pt:
+            continue
+        spec = pt.get("spec") or {}
+        src = spec.get("mesh_from") or spec.get("concept_from") or spec.get("file")
+        existing = by_type_src.get((pt.get("type"), src))
+        if existing:
+            merged = dict(parent_specs.get(existing, {}))
+            merged.update(spec)          # keep the parent shape, apply the change
+            pt.clear()
+            pt.update({"target": existing, "spec": merged})
+
+
+def validate_patch_specs(patch_tasks) -> None:
+    """Every op's spec must have the keys its executor reads."""
+    for pt in patch_tasks:
+        kind = pt.get("type")
+        spec = pt.get("spec") or {}
+        if "target" in pt and not kind:
+            continue                     # MODIFY type is fixed by the target row
+        missing = [k for k in _REQUIRED_SPEC.get(kind, ()) if k not in spec]
+        if missing:
+            raise ValueError(
+                f"{kind} op {pt.get('id') or pt.get('target')!r} is missing spec "
+                f"key(s) {missing}; a {kind} spec needs "
+                f"{list(_REQUIRED_SPEC[kind])} and nothing else is read.")

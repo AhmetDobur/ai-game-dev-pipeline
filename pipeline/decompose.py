@@ -263,15 +263,28 @@ Reply with ONLY a JSON array of patch operations. Each item is exactly one of:
 - ADD a new artifact:
   {{"id": "<new short id>", "type": "<design_2d|design_3d|rig_animate|code|audio>",
     "depends_on": [<ids, existing from the list or other new ids>], "spec": {{...}}}}
-Spec shapes are the same as a fresh decomposition. Do NOT emit an "assemble" task —
-the build is regenerated automatically. Touch the fewest artifacts necessary.
+Use the artifact ids EXACTLY as written in the list above, in full.
+
+A spec must contain exactly the keys its type reads — no invented keys:
+- "design_2d": {{"prompt": <SDXL prompt>, "purpose": <what this art is for>}}
+- "design_3d": {{"prompt": <text spec>, "concept_from": <a design_2d id>}}
+- "rig_animate": {{"mesh_from": <a design_3d id>, "body_plan": "humanoid" | "nonhumanoid",
+                   "animations": [<clip names>], "extras": [<"tail","jaw","wings","cloak">]}}
+- "code": {{"file": <relative path>, "description": <what to implement>}}
+- "audio": {{"text": <line to speak>, "voice": <voice name>}}
+A MODIFY spec is the FULL new spec for that task, not just the changed keys.
+Prefer MODIFY of the artifact that is wrong over ADD of a second one beside it.
+Do NOT emit an "assemble" task — the build is regenerated automatically.
+Touch the fewest artifacts necessary.
 Reference images uploaded by the user: {ref_note}"""
 
 
 def decompose_patch(router, manifest_rows: list[dict], instruction: str,
                     reference_images: list[str], temperature: float = 0.6,
                     max_tokens: int = 4096, on_token=None) -> list[dict]:
-    from .patch import check_patch_grounding, validate_patch_list
+    from .patch import (check_patch_grounding, collapse_duplicate_adds,
+                        repair_patch_list, validate_patch_list,
+                        validate_patch_specs)
     lines = "\n".join(
         f"{m['id']} — {m['type']} — asked for: {m['summary']}\n"
         f"{' ' * 4}observed: {m.get('observed') or '(not measured)'}"
@@ -280,6 +293,7 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
     prompt = PATCH_PROMPT.format(manifest=lines, instruction=instruction, ref_note=ref_note)
     messages = [{"role": "user", "content": prompt}]
     ids = {m["id"] for m in manifest_rows}
+    parent_specs = {m["id"]: m.get("spec", {}) for m in manifest_rows}
     last_err, reply = None, ""
     # same three-strike loop the fresh decomposition has had all along: a small
     # router gets this wrong first time, and the grounding error is written to be
@@ -290,7 +304,13 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
         reply = _THINK_RE.sub("", raw).strip() or raw
         try:
             patch_tasks = extract_json(reply)
+            # repair before validating, exactly as the fresh decomposition does:
+            # a router writing the bare decomposer id it was taught to write is
+            # not a mistake worth throwing a correct patch away over
+            repair_patch_list(patch_tasks, manifest_rows)
+            collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs)
             validate_patch_list(patch_tasks, ids)
+            validate_patch_specs(patch_tasks)
             check_patch_grounding(patch_tasks, manifest_rows, instruction)
             return patch_tasks
         except (ValueError, KeyError, TypeError, AttributeError) as e:

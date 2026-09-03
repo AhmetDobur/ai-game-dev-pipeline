@@ -691,3 +691,65 @@ def test_flat_plane_is_reported_from_the_glb(tmp_path):
                        "count": 300}],
     }
     assert "FLAT PLANE" in facts_for("design_3d", str(_glb(tmp_path / "flat.glb", doc)))
+
+
+def _rows_with_specs():
+    return [
+        {"id": "349e-hero_art", "type": "design_2d", "summary": "a knight",
+         "observed": "1024x1024 image", "spec": {"prompt": "a knight, solo"}},
+        {"id": "349e-hero_mesh", "type": "design_3d", "summary": "knight mesh",
+         "observed": "size 0.5x1.0x0.3",
+         "spec": {"prompt": "knight mesh", "concept_from": "349e-hero_art"}},
+        {"id": "349e-hero_anim", "type": "rig_animate", "summary": "idle,walk,run",
+         "observed": "NOT SKINNED: the mesh is not bound to the skeleton",
+         "spec": {"mesh_from": "349e-hero_mesh", "body_plan": "humanoid",
+                  "animations": ["idle", "walk", "run"], "extras": []}},
+    ]
+
+
+def test_bare_ids_are_repaired_not_rejected():
+    """R1's real reply used 'hero_mesh'; the manifest ids are run-prefixed. The
+    patch was semantically right and was thrown away three times over the name."""
+    from pipeline.patch import repair_patch_list
+    ops = [{"id": "hero_skinning", "type": "rig_animate",
+            "depends_on": ["hero_mesh"], "spec": {"mesh_from": "hero_mesh"}}]
+    repair_patch_list(ops, _rows_with_specs())
+    assert ops[0]["depends_on"] == ["349e-hero_mesh"]
+    assert ops[0]["spec"]["mesh_from"] == "349e-hero_mesh"
+
+
+def test_ambiguous_bare_id_is_left_for_the_validator():
+    from pipeline.patch import repair_patch_list
+    rows = [{"id": "a-mesh", "type": "design_3d", "summary": "", "observed": "", "spec": {}},
+            {"id": "b-mesh", "type": "design_3d", "summary": "", "observed": "", "spec": {}}]
+    ops = [{"target": "mesh", "spec": {}}]
+    repair_patch_list(ops, rows)
+    assert ops[0]["target"] == "mesh"      # untouched: two candidates
+
+
+def test_duplicate_add_becomes_a_modify():
+    """Told the rig is unskinned, R1 added a SECOND rig for the same mesh —
+    which would ship the character twice."""
+    from pipeline.patch import collapse_duplicate_adds
+    rows = _rows_with_specs()
+    specs = {r["id"]: r["spec"] for r in rows}
+    ops = [{"id": "hero_skinning", "type": "rig_animate",
+            "depends_on": ["349e-hero_mesh"],
+            "spec": {"mesh_from": "349e-hero_mesh", "animations": ["idle", "walk", "run"]}}]
+    collapse_duplicate_adds(ops, rows, specs)
+    assert ops[0] == {"target": "349e-hero_anim",
+                      "spec": {"mesh_from": "349e-hero_mesh", "body_plan": "humanoid",
+                               "animations": ["idle", "walk", "run"], "extras": []}}
+
+
+def test_invented_spec_keys_are_reported_with_the_real_shape():
+    """R1 invented {"skin_to_rig": true}; the message must say what a rig spec
+    actually needs, because that message is what it gets to retry from."""
+    from pipeline.patch import validate_patch_specs
+    try:
+        validate_patch_specs([{"id": "x", "type": "rig_animate",
+                               "spec": {"skin_to_rig": True}}])
+        raise AssertionError("an invented spec was accepted")
+    except ValueError as e:
+        for k in ("mesh_from", "body_plan", "animations"):
+            assert k in str(e)
