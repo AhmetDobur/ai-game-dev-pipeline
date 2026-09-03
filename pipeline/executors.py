@@ -1,6 +1,7 @@
 """Production executors: one callable per task type, built from config.
 Each takes (task, out_dir) and returns the list of produced files."""
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -153,21 +154,42 @@ def build_executors(cfg: dict, workspace: Path,
         return [tts.speak(task["spec"]["text"], task["spec"].get("voice", "leo"), out)]
 
     def assemble(task: dict, out_dir: Path) -> list[Path]:
+        from .scaffold import scaffold as scaffold_project
+        scaffold_project(game_dir, task["spec"].get("title", "Generated Game"),
+                         task.get("dep_outputs", {}), task.get("dep_types", {}),
+                         task.get("dep_specs", {}))
+        godot = cfg["paths"]["godot"]
+        subprocess.run([godot, "--headless", "--path", str(game_dir), "--import"],
+                       check=False, capture_output=True, timeout=600)
+        # boot check: run the game headless for a few frames — a scene or script
+        # that cannot load fails HERE, with the real godot error, not at export
+        b = subprocess.run([godot, "--headless", "--path", str(game_dir),
+                            "--quit-after", "10"],
+                           capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=300)
+        boot_log = (b.stderr or "") + (b.stdout or "")
+        if b.returncode != 0 or "SCRIPT ERROR" in boot_log:
+            raise RuntimeError(f"game failed to boot:\n{boot_log[-2000:]}")
+
         # stable, predictable location so users find the build without a task id
         dist = workspace / "dist"
         dist.mkdir(parents=True, exist_ok=True)
         preset = task["spec"].get("export_preset", "Windows Desktop")
         target = dist / ("game.exe" if "windows" in preset.lower() else "game.zip")
-        godot = cfg["paths"]["godot"]
-        subprocess.run([godot, "--headless", "--path", str(game_dir), "--import"],
-                       check=False, capture_output=True, timeout=600)
         r = subprocess.run([godot, "--headless", "--path", str(game_dir),
                             "--export-release", preset, str(target)],
                            capture_output=True, encoding="utf-8", errors="replace",
                            timeout=1800)
-        if r.returncode != 0 or not target.exists():
-            raise RuntimeError(f"godot export failed:\n{(r.stderr or r.stdout)[-2000:]}")
-        return [target]
+        if r.returncode == 0 and target.exists():
+            return [target]
+        err = (r.stderr or r.stdout or "")
+        if "export template" in err.lower():
+            # no templates installed: ship the (boot-verified) project as a zip
+            # runnable with the godot binary instead of failing the whole game
+            zip_base = dist / "game"
+            path = Path(shutil.make_archive(str(zip_base), "zip", game_dir))
+            return [path]
+        raise RuntimeError(f"godot export failed:\n{err[-2000:]}")
 
     return {"code": code, "design_2d": design_2d, "design_3d": design_3d,
             "rig_animate": rig_animate, "audio": audio, "assemble": assemble}

@@ -136,11 +136,16 @@ class Scheduler:
                 # and each dependency's outputs so data flows along edges
                 task_view = dict(task)
                 task_view["last_error"] = last_error
+                dep_rows = {dep: db.get_task(self.conn, dep)
+                            for dep in task["depends_on"]}
                 task_view["dep_outputs"] = {
                     dep: (dt["output_path"].split(";") if dt and dt["output_path"] else [])
-                    for dep in task["depends_on"]
-                    for dt in [db.get_task(self.conn, dep)]
+                    for dep, dt in dep_rows.items()
                 }
+                task_view["dep_types"] = {dep: (dt["type"] if dt else "")
+                                          for dep, dt in dep_rows.items()}
+                task_view["dep_specs"] = {dep: (dt["spec"] if dt else {})
+                                          for dep, dt in dep_rows.items()}
                 outputs = executor(task_view, out_dir)
                 ok, detail = validate(task, outputs, godot_binary=self.godot_binary,
                                       project_dir=self.workspace / "game")
