@@ -55,9 +55,11 @@ Example (a different, minimal game — copy the STRUCTURE, not the content):
 [
  {{"id": "hero_art", "type": "design_2d", "depends_on": [],
    "spec": {{"prompt": "a knight, solo, full body, centered, plain background",
-             "purpose": "concept for the hero mesh"}}}},
+             "purpose": "concept for the hero mesh",
+             "ref_image": "<the knight reference path, IF the user uploaded one>"}}}},
  {{"id": "hero_mesh", "type": "design_3d", "depends_on": ["hero_art"],
-   "spec": {{"prompt": "the knight as a game-ready mesh", "concept_from": "hero_art"}}}},
+   "spec": {{"prompt": "the knight as a game-ready mesh", "concept_from": "hero_art",
+             "ref_image": "<same reference path — the mesh is built from it directly>"}}}},
  {{"id": "hero_anim", "type": "rig_animate", "depends_on": ["hero_mesh"],
    "spec": {{"mesh_from": "hero_mesh", "body_plan": "humanoid",
              "animations": ["idle", "walk"], "extras": []}}}},
