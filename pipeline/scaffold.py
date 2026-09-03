@@ -187,7 +187,75 @@ def _wall_props(env_glbs: list, per_glb: int = 3):
     return slots
 
 
-def _world_tscn(player_script: str | None, char_glb: str | None,
+MAX_PLAYERS = 2          # split-screen halves; a third would need a 2x2 grid
+SPAWN_Z = -16.0          # near the hall's entrance, facing the apse
+
+
+def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
+    """Player bodies + the split-screen viewports their cameras render into.
+
+    With one character this is the plain single-camera setup. With two, each
+    player gets half the window: the cameras must live INSIDE the SubViewports to
+    render there, so they are not children of the players and player.gd carries
+    each pivot's transform onto its camera every frame. The SubViewports keep
+    `own_world_3d` at its default false, so they inherit the root viewport's
+    World3D and every player sees the same hall.
+    """
+    n = min(len(char_glbs), MAX_PLAYERS) or 1
+    split = n > 1
+    out = []
+    for i in range(n):
+        name = f"Player{i + 1}" if split else "Player"
+        x = (i - (n - 1) / 2) * 3.0
+        cam = f'NodePath("../Split/Half{i}/View/Camera")' if split else None
+        script = ""
+        if script_id:
+            script = f'script = ExtResource("{script_id}")\ndevice = {i}\n'
+            if cam:
+                script += f'camera_path = {cam}\n'
+        mesh = ""
+        if i < len(char_glbs):
+            mid = ext_res("PackedScene", char_glbs[i])
+            mesh = f'\n[node name="Mesh" parent="{name}" instance=ExtResource("{mid}")]'
+        out.append(f"""[node name="{name}" type="CharacterBody3D" parent="."]
+position = Vector3({round(x, 2)}, 1.2, {SPAWN_Z})
+{script}
+[node name="Collision" type="CollisionShape3D" parent="{name}"]
+position = Vector3(0, 0.9, 0)
+shape = SubResource("player_shape")
+{mesh}
+
+[node name="CamPivot" type="Node3D" parent="{name}"]
+position = Vector3(0, 1.6, 0)""")
+        if not split:
+            out.append(f"""[node name="Camera3D" type="Camera3D" parent="{name}/CamPivot"]
+position = Vector3(0, 0.4, 3.5)""")
+    if not split:
+        return "\n\n".join(out)
+
+    out.append("""[node name="Split" type="HBoxContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 2""")
+    for i in range(n):
+        out.append(f"""[node name="Half{i}" type="SubViewportContainer" parent="Split"]
+stretch = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="View" type="SubViewport" parent="Split/Half{i}"]
+handle_input_locally = false
+render_target_update_mode = 4
+
+[node name="Camera" type="Camera3D" parent="Split/Half{i}/View"]
+current = true""")
+    return "\n\n".join(out)
+
+
+def _world_tscn(player_script: str | None, char_glbs: list[str],
                 env_glbs: list[str], env_ref: str | None = None) -> str:
     from .palette import roles
     pal = roles(env_ref)
@@ -214,15 +282,8 @@ shape = SubResource("prop_shape")
 
 [node name="PropMesh{i}" parent="Prop{i}" instance=ExtResource("{env_ids[gi]}")]""")
 
-    player_type = "CharacterBody3D"
-    script_line = ""
-    if player_script:
-        sid = ext_res("Script", player_script)
-        script_line = f'script = ExtResource("{sid}")\n'
-    char_line = ""
-    if char_glb:
-        cid = ext_res("PackedScene", char_glb)
-        char_line = f'\n[node name="Mesh" parent="Player" instance=ExtResource("{cid}")]'
+    script_id = ext_res("Script", player_script) if player_script else None
+    players = _players(char_glbs, script_id, ext_res)
 
     # candle-warm point lights around the room + a weak cool moonlight key
     candle_slots = [(x, round(-HALL_L / 2 + 5.0 + i * ((HALL_L - 10) / 5), 2))
@@ -284,19 +345,7 @@ shadow_enabled = true
 
 {chr(10).join(nodes)}
 
-[node name="Player" type="{player_type}" parent="."]
-position = Vector3(0, 1.2, -16)
-{script_line}
-[node name="Collision" type="CollisionShape3D" parent="Player"]
-position = Vector3(0, 0.9, 0)
-shape = SubResource("player_shape")
-{char_line}
-
-[node name="CamPivot" type="Node3D" parent="Player"]
-position = Vector3(0, 1.6, 0)
-
-[node name="Camera3D" type="Camera3D" parent="Player/CamPivot"]
-position = Vector3(0, 0.4, 3.5)
+{players}
 """
 
 
@@ -310,7 +359,7 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
     # classify deps: rig_animate output is the playable character; any design_3d
     # not consumed as a rig's source mesh is environment
     consumed = {s.get("mesh_from") for s in dep_specs.values() if isinstance(s, dict)}
-    char_glb, env_glbs = None, []
+    char_glbs, env_glbs = [], []
     for dep, paths in dep_outputs.items():
         files = [Path(p) for p in paths if p]
         if not files:
@@ -331,7 +380,7 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
             # are the pre-0.7 layout, kept as fallback for old runs
             best = ([c for c in copied if c.endswith("character.glb")]
                     or [c for c in copied if "idle" in c.lower()] or copied)
-            char_glb = best[0]
+            char_glbs.append(best[0])
         elif kind == "design_3d" and dep not in consumed and copied:
             env_glbs += [c for c in copied if c.endswith((".glb", ".gltf"))]
 
@@ -348,10 +397,19 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
                     env_ref = str(cand)
                     break
 
-    player_script = None
+    # the coder LLM's player.gd wins when it is usable; otherwise ship ours, so a
+    # run never ends in a world nobody can walk around. Split-screen needs the
+    # camera_path/device exports, which only our template has.
     p = game_dir / "scripts" / "player.gd"
-    if p.exists() and "CharacterBody3D" in p.read_text(encoding="utf-8", errors="replace"):
-        player_script = "res://scripts/player.gd"
+    usable = p.exists() and "CharacterBody3D" in p.read_text(
+        encoding="utf-8", errors="replace")
+    if len(char_glbs) > 1 or not usable:
+        src = Path(__file__).resolve().parent.parent / "templates" / "player.gd"
+        if src.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, p)
+            usable = True
+    player_script = "res://scripts/player.gd" if usable else None
 
     input_map = "".join(_ACTION.format(name=n, a=a, b=b) for n, (a, b) in _KEYS.items())
     (game_dir / "scenes").mkdir(exist_ok=True)
@@ -366,4 +424,4 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         (game_dir / "scripts").mkdir(exist_ok=True)
         shutil.copy2(shot_src, game_dir / "scripts" / "godot_shot.gd")
     (game_dir / "scenes" / "world.tscn").write_text(
-        _world_tscn(player_script, char_glb, env_glbs, env_ref), encoding="utf-8")
+        _world_tscn(player_script, char_glbs, env_glbs, env_ref), encoding="utf-8")

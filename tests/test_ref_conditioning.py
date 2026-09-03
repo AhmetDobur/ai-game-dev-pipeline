@@ -86,7 +86,7 @@ def test_design_3d_with_only_ref_image_validates():
 def test_world_tscn_builds_an_enclosed_hall():
     """The room is authored geometry: TRELLIS cannot make a space you stand in,
     so a walkable interior has to exist before any generated prop is placed."""
-    scene = _world_tscn("res://scripts/player.gd", "res://assets/c/character.glb",
+    scene = _world_tscn("res://scripts/player.gd", ["res://assets/c/character.glb"],
                         ["res://assets/e/shelf.glb"])
     assert "volumetric_fog_enabled = true" in scene
     # four walls, a ceiling and a floor -- without these the player walked on an
@@ -102,7 +102,7 @@ def test_world_tscn_builds_an_enclosed_hall():
 
 
 def test_world_tscn_props_line_the_walls_not_a_ring():
-    scene = _world_tscn(None, None, ["res://assets/e/shelf.glb"])
+    scene = _world_tscn(None, [], ["res://assets/e/shelf.glb"])
     assert scene.count("instance=ExtResource") == 3         # 3 placements, no player mesh
     assert scene.count('shape = SubResource("prop_shape")') == 3
     from pipeline.scaffold import _wall_props, HALL_W
@@ -115,7 +115,7 @@ def test_hall_palette_follows_the_environment_reference(tmp_path):
     from PIL import Image
     ref = tmp_path / "lib_env.png"
     Image.new("RGB", (64, 64), (20, 90, 160)).save(ref)     # strongly blue
-    scene = _world_tscn(None, None, [], str(ref))
+    scene = _world_tscn(None, [], [], str(ref))
     assert "Color(0.078, 0.353, 0.627" in scene, [
         l for l in scene.splitlines() if "albedo_color" in l]
 
@@ -433,3 +433,28 @@ def test_two_char_meshes_get_different_subjects():
     assert meshes["m1"]["ref_image"] == meshes["m2"]["ref_image"]  # one sheet
     subjects = {meshes["m1"].get("ref_subject", 0), meshes["m2"].get("ref_subject", 0)}
     assert subjects == {0, 1}, f"both meshes took the same figure: {subjects}"
+
+
+def test_two_characters_get_split_screen():
+    """Both heroes on screen at once: one body each, one camera each, and the
+    cameras inside SubViewports so each renders its own half."""
+    from pipeline.scaffold import _world_tscn
+    scene = _world_tscn("res://scripts/player.gd",
+                        ["res://assets/a/character.glb",
+                         "res://assets/b/character.glb"], [])
+    assert scene.count('type="CharacterBody3D"') == 2
+    assert scene.count('type="SubViewport"') == 2
+    assert scene.count('type="Camera3D"') == 2
+    assert "device = 0" in scene and "device = 1" in scene
+    assert 'camera_path = NodePath("../Split/Half1/View/Camera")' in scene
+    # each player instances a DIFFERENT mesh
+    assert "assets/a/character.glb" in scene and "assets/b/character.glb" in scene
+
+
+def test_one_character_keeps_single_camera():
+    """A solo run must not grow split-screen machinery."""
+    from pipeline.scaffold import _world_tscn
+    scene = _world_tscn("res://scripts/player.gd", ["res://assets/a/character.glb"], [])
+    assert "SubViewport" not in scene
+    assert scene.count('type="Camera3D"') == 1
+    assert '[node name="Player" type="CharacterBody3D"' in scene
