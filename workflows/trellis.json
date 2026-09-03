@@ -133,7 +133,7 @@
  "14": {
   "class_type": "VaeDecodeStructureTrellis2",
   "inputs": {
-   "resolution": "64",
+   "resolution": "32",
    "samples": [
     "13",
     0
