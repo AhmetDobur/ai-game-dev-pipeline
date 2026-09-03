@@ -4,3 +4,5 @@ uvicorn==0.52.4
 requests==2.34.2
 python-multipart==0.0.32
 Pillow
+rembg
+onnxruntime
