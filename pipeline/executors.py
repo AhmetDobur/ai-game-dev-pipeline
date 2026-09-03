@@ -2,6 +2,7 @@
 Each takes (task, out_dir) and returns the list of produced files."""
 import json
 import shutil
+import os
 import subprocess
 from pathlib import Path
 
@@ -221,6 +222,20 @@ def build_executors(cfg: dict, workspace: Path,
         if b.returncode != 0 or "SCRIPT ERROR" in boot_log:
             raise RuntimeError(f"game failed to boot:\n{boot_log[-2000:]}")
 
+        # photograph the world the run just built. Every previous run shipped an
+        # .exe that nobody had looked at, so an empty or black world was
+        # indistinguishable from a good one until a human launched it. Needs a
+        # real display (a screenshot has no meaning under --headless), and a
+        # missing screenshot is never worth failing a verified build over.
+        shot = out_dir / "world_shot.png"
+        try:
+            subprocess.run([godot, "--path", str(game_dir), "--resolution", "1280x720"],
+                           env={**os.environ, "PIPELINE_SHOT": str(shot)},
+                           capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=240)
+        except Exception as e:
+            print(f"[assemble] world screenshot skipped: {e}", flush=True)
+
         # stable, predictable location so users find the build without a task id
         dist = workspace / "dist"
         dist.mkdir(parents=True, exist_ok=True)
@@ -234,7 +249,7 @@ def build_executors(cfg: dict, workspace: Path,
                            capture_output=True, encoding="utf-8", errors="replace",
                            timeout=1800)
         if r.returncode == 0 and target.exists():
-            return [target]
+            return [target] + ([shot] if shot.exists() else [])
         err = (r.stderr or r.stdout or "")
         if "export template" in err.lower():
             # no templates installed: ship the (boot-verified) project as a zip

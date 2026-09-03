@@ -21,13 +21,19 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
     if kind == "design_2d":
         return _validate_files(output_paths, IMAGE_EXTS, MIN_IMAGE_BYTES, "image")
     if kind == "design_3d":
-        return _validate_files(output_paths, MESH_EXTS, MIN_MESH_BYTES, "mesh")
+        ok, detail = _validate_files(output_paths, MESH_EXTS, MIN_MESH_BYTES, "mesh")
+        return (ok, detail) if not ok else _validate_geometry(output_paths)
     if kind == "rig_animate":
-        return _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES, "animated model")
+        ok, detail = _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES,
+                                     "animated model")
+        return (ok, detail) if not ok else _validate_geometry(output_paths)
     if kind == "audio":
         return _validate_audio(output_paths)
     if kind == "assemble":
-        return _validate_files(output_paths, {".exe", ".pck", ".zip", ".x86_64", ".app"},
+        # assemble also returns a world screenshot; judge the BUILD, and never
+        # let a 200 KB PNG look like a failed 1 MB export
+        builds = [p for p in output_paths if p.suffix.lower() not in IMAGE_EXTS]
+        return _validate_files(builds, {".exe", ".pck", ".zip", ".x86_64", ".app"},
                                1_000_000, "game build")
     return False, f"no validator for task type {kind!r}"
 
@@ -44,6 +50,17 @@ def _validate_files(paths: list[Path], exts: set[str], min_bytes: int,
         if p.stat().st_size < min_bytes:
             return False, f"{p.name}: {p.stat().st_size} bytes — too small for a real {label}"
     return True, f"{len(paths)} {label} file(s) ok"
+
+
+def _validate_geometry(paths: list[Path]) -> tuple[bool, str]:
+    """Byte count says nothing about shape: a flat plane still weighs 8 MB."""
+    from .inspect3d import verdict
+    for p in paths:
+        if p.suffix.lower() in (".glb", ".gltf"):
+            ok, detail = verdict(p)
+            if not ok:
+                return False, detail
+    return True, "geometry ok"
 
 
 def _validate_audio(paths: list[Path]) -> tuple[bool, str]:

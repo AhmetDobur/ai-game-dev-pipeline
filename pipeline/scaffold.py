@@ -200,6 +200,7 @@ def _world_tscn(player_script: str | None, char_glb: str | None,
         ext.append(f'[ext_resource type="{kind}" path="{path}" id="{rid}"]')
         return str(rid)
 
+    shot_id = ext_res("Script", "res://scripts/godot_shot.gd")
     nodes.extend(_hall_geometry(pal, sub))
     env_ids = [ext_res("PackedScene", g) for g in env_glbs]
     for i, (gi, x, z, yaw) in enumerate(_wall_props(env_glbs) if env_glbs else []):
@@ -268,6 +269,7 @@ volumetric_fog_albedo = Color(0.55, 0.50, 0.45, 1)
 volumetric_fog_emission = Color(0.04, 0.032, 0.022, 1)
 
 [node name="World" type="Node3D"]
+script = ExtResource("{shot_id}")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("world_env")
@@ -357,5 +359,11 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         PROJECT_GODOT.format(title=title.replace('"', ""), input_map=input_map),
         encoding="utf-8")
     (game_dir / "export_presets.cfg").write_text(EXPORT_PRESETS, encoding="utf-8")
+    # shipped with every project so the assemble step can photograph the world it
+    # just built; harmless when unused, and it never steals an existing camera
+    shot_src = Path(__file__).resolve().parent.parent / "templates" / "godot_shot.gd"
+    if shot_src.exists():
+        (game_dir / "scripts").mkdir(exist_ok=True)
+        shutil.copy2(shot_src, game_dir / "scripts" / "godot_shot.gd")
     (game_dir / "scenes" / "world.tscn").write_text(
         _world_tscn(player_script, char_glb, env_glbs, env_ref), encoding="utf-8")

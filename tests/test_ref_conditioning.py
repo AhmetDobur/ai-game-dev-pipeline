@@ -1,4 +1,5 @@
 """Reference-image conditioning: crop, ref_image repair, scaffold environment."""
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -323,3 +324,60 @@ def test_char_ref_survives_a_prop_mesh_holding_its_own_ref():
     repair_task_list(tasks, ["inbox/sheet_char.png", "inbox/lamp_env.png"], "")
     hero = next(t for t in tasks if t["id"] == "hero_mesh")
     assert hero["spec"]["ref_image"] == "inbox/sheet_char.png"
+
+
+# --- geometry gate -------------------------------------------------------
+# Measured bboxes from 21 real pipeline meshes. Numbers 2/3/4/21 came back as
+# flat planes -- 3 mm thick, 8 MB, 40k faces -- and every byte-count check
+# passed them. 14 is the mesh the user called his ideal.
+_REAL_BBOXES = {
+    1: [0.9969, 0.2824, 0.9705], 2: [1.0019, 0.003, 0.9763],
+    3: [0.996, 0.0031, 0.9954], 4: [0.9957, 0.0029, 0.9955],
+    5: [0.9965, 0.9959, 0.7306], 13: [0.8848, 0.5139, 0.9918],
+    14: [0.5241, 0.3349, 0.9984], 15: [0.9749, 0.3509, 0.7616],
+    20: [0.9976, 0.1287, 0.9857], 21: [0.9929, 0.0129, 1.0011],
+}
+_BROKEN = {2, 3, 4, 21}
+
+
+def _write_metrics(tmp_path, bbox):
+    mesh = tmp_path / "m.glb"
+    mesh.write_bytes(b"x" * 10)
+    (tmp_path / "m.glb.metrics.json").write_text(json.dumps({"bbox": bbox}))
+    return mesh
+
+
+def test_geometry_gate_matches_the_measured_meshes(tmp_path):
+    from pipeline.inspect3d import verdict
+    for n, bbox in _REAL_BBOXES.items():
+        d = tmp_path / str(n)
+        d.mkdir()
+        ok, detail = verdict(_write_metrics(d, bbox))
+        assert ok is (n not in _BROKEN), (n, bbox, detail)
+
+
+def test_missing_metrics_never_rejects(tmp_path):
+    """A preview that did not run must not fail the task."""
+    from pipeline.inspect3d import verdict
+    mesh = tmp_path / "m.glb"
+    mesh.write_bytes(b"x" * 10)
+    assert verdict(mesh)[0] is True
+
+
+def test_validate_rejects_a_flat_plane(tmp_path):
+    from pipeline.validate import validate
+    mesh = _write_metrics(tmp_path, [1.0019, 0.003, 0.9763])
+    mesh.write_bytes(b"x" * 60_000)      # comfortably over MIN_MESH_BYTES
+    ok, detail = validate({"type": "design_3d", "spec": {}}, [mesh])
+    assert ok is False and "degenerate" in detail
+
+
+def test_assemble_validation_ignores_the_world_screenshot(tmp_path):
+    """The build is the artifact under test; the screenshot rides along."""
+    from pipeline.validate import validate
+    exe = tmp_path / "game.exe"
+    exe.write_bytes(b"x" * 2_000_000)
+    shot = tmp_path / "world_shot.png"
+    shot.write_bytes(b"x" * 30_000)
+    ok, detail = validate({"type": "assemble", "spec": {}}, [exe, shot])
+    assert ok is True, detail

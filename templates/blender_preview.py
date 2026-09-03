@@ -1,4 +1,9 @@
-# Headless GLB preview render: blender --background --python blender_preview.py -- <glb> <out.png>
+# Headless GLB preview render + objective mesh metrics:
+#   blender --background --python blender_preview.py -- <glb> <out.png>
+# Writes <out.png> and <glb>.metrics.json. The metrics exist so the pipeline can
+# reject a mesh WITHOUT a human looking at it: the failures this catches are the
+# ones that actually shipped -- a character reconstructed as a featureless block,
+# and a texture baked at cfg 1.0 that came out near-uniform.
 # One 3/4 view with neutral studio lighting — enough to see whether a generated
 # mesh is a character or a rectangle. Never used in the game itself.
 import math
@@ -53,3 +58,57 @@ except TypeError:
 sc.render.resolution_x = sc.render.resolution_y = 512
 sc.render.filepath = out_png
 bpy.ops.render.render(write_still=True)
+
+
+# ------------------------------------------------------------------ metrics
+import json
+
+metrics = {"bbox": [round(v, 4) for v in (hi - lo)],
+           "verts": sum(len(o.data.vertices) for o in meshes),
+           "faces": sum(len(o.data.polygons) for o in meshes),
+           "objects": len(meshes)}
+
+dx, dy, dz = (hi - lo)
+longest = max(dx, dy, dz) or 1.0
+shortest = min(dx, dy, dz) or 1.0
+metrics["aspect"] = round(longest / shortest, 4)
+
+# fill ratio: a figure with limbs leaves most of its bounding box empty; a
+# solid block fills nearly all of it. This is the "it came out a rectangle"
+# detector, and it needs no notion of what the subject was supposed to be.
+try:
+    import bmesh
+    vol = 0.0
+    for o in meshes:
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        bm.transform(o.matrix_world)
+        vol += abs(bm.calc_volume(signed=True))
+        bm.free()
+    bbox_vol = float(dx * dy * dz) or 1.0
+    metrics["fill_ratio"] = round(min(vol / bbox_vol, 1.0), 4)
+except Exception:
+    metrics["fill_ratio"] = None
+
+# texture spread: the mean per-channel standard deviation of the baked base
+# colour. A washed-out / unguided bake collapses toward one colour.
+try:
+    spreads = []
+    for img in bpy.data.images:
+        if not img.has_data or img.size[0] < 8:
+            continue
+        px = list(img.pixels)
+        step = max(1, (len(px) // 4) // 4000) * 4      # ~4k samples, RGBA stride
+        for ch in range(3):
+            vals = px[ch::step] if step > 4 else px[ch::4]
+            if len(vals) < 16:
+                continue
+            m = sum(vals) / len(vals)
+            spreads.append((sum((v - m) ** 2 for v in vals) / len(vals)) ** 0.5)
+    metrics["texture_spread"] = round(sum(spreads) / len(spreads), 4) if spreads else None
+except Exception:
+    metrics["texture_spread"] = None
+
+with open(glb + ".metrics.json", "w") as fh:
+    json.dump(metrics, fh, indent=1)
+print("METRICS " + json.dumps(metrics))
