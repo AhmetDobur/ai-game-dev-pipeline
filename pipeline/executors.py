@@ -24,6 +24,8 @@ KinematicBody->CharacterBody3D (velocity is built in; move_and_slide() takes
 no arguments), Spatial->Node3D, onready var->@onready var, export->@export,
 yield->await, .instance()->.instantiate(), OS.get_ticks_msec()->Time.get_ticks_msec(),
 rand_range(a,b)->randf_range(a,b), Input singleton constants unchanged.
+3D node types all end in "3D": DirectionalLight3D, OmniLight3D, SpotLight3D,
+Camera3D, MeshInstance3D, Node3D, Area3D, RayCast3D — never the bare Godot 3 names.
 
 Reference — a CORRECT Godot 4 third-person controller (copy these idioms exactly:
 velocity is inherited, never redeclared; mouse look uses _unhandled_input, there

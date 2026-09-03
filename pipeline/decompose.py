@@ -190,12 +190,31 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                 if by_id.get(d, {}).get("type") == "design_2d":
                     t["spec"]["concept_from"] = d
                     break
-        if t.get("type") == "code" and not t["spec"].get("file"):
-            # a consistent invented path beats a rejected plan; the coder writes
-            # whatever file it is told to
-            slug = re.sub(r"[^a-z0-9_]+", "_", str(t.get("id", "task")).lower())
-            t["spec"]["file"] = f"scripts/{slug}.gd"
+        if t.get("type") == "code":
+            fd = t["spec"].get("frame_data")
+            # frame_data is ONLY the combat-timing contract; routers stuff generic
+            # config in it (lighting, camera...) which would trigger the combat-sim
+            # grader on an unrelated task
+            if isinstance(fd, dict) and fd and not all(
+                    isinstance(v, dict) and "startup" in v for v in fd.values()):
+                del t["spec"]["frame_data"]
+            if not t["spec"].get("file"):
+                # a consistent invented path beats a rejected plan; the coder
+                # writes whatever file it is told to
+                slug = re.sub(r"[^a-z0-9_]+", "_", str(t.get("id", "task")).lower())
+                t["spec"]["file"] = f"scripts/{slug}.gd"
         t["depends_on"] = sorted(deps)
+    # non-ASCII ids (a Qwen router drifts into Chinese) slug to the same file —
+    # de-collide deterministically
+    seen: dict[str, int] = {}
+    for t in tasks:
+        if isinstance(t, dict) and t.get("type") == "code":
+            f = t["spec"]["file"]
+            n = seen.get(f, 0)
+            seen[f] = n + 1
+            if n:
+                stem, dot, ext = f.rpartition(".")
+                t["spec"]["file"] = f"{stem}_{n}{dot}{ext}" if dot else f"{f}_{n}"
 
 
 def validate_task_list(tasks) -> None:
