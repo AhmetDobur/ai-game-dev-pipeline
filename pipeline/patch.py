@@ -11,6 +11,7 @@ The graph transform is a pure function (`build_patch_graph`) so the cascade logi
 tested without a GPU, a DB or Blender. The whole graph is inserted in one atomic
 transaction, so a crash mid-build leaves zero tasks (a clean re-run), never half.
 """
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -40,6 +41,21 @@ def prepare_workspace(cfg, run_id: str, parent_id: str) -> None:
         shutil.copytree(src, dst, dirs_exist_ok=True)
     else:
         dst.mkdir(parents=True, exist_ok=True)
+
+
+_RUN_PREFIX = re.compile(r"^[0-9a-f]{12}-")
+
+
+def short_id(full: str) -> str:
+    """`349edb5bf375-hero_anim` -> `hero_anim`.
+
+    The router is shown these. Run-scoped ids are an internal concern, and a 7B
+    asked to copy twenty 25-character ids exactly will not: in a live run it
+    wrote the bare id anyway, because that is the form every example it has
+    seen uses. Showing the short form removes the whole class of mistake, and
+    repair_patch_list still accepts the long one.
+    """
+    return _RUN_PREFIX.sub("", full or "")
 
 
 def manifest(parent_rows: list[dict]) -> list[dict]:
@@ -248,14 +264,27 @@ def check_patch_grounding(patch_tasks, manifest_rows, instruction) -> None:
     touched |= {pt.get("type") for pt in patch_tasks if "target" not in pt}
     if want in touched:
         return
+    if len(candidates) == 1:
+        # one obvious answer: hand it over whole. The value of this check is that
+        # it is grounded in measured facts, not that a 7B rediscovers the target
+        # unaided on the third try -- which, in a live run, it did not.
+        c = candidates[0]
+        import json as _json
+        raise ValueError(
+            f"the instruction is about {want}, but this patch changes none. "
+            f"There is exactly one {want} artifact and its observed state is: "
+            f"{c.get('observed') or 'not measured'}. "
+            f'Reply with exactly: [{{"target": "{short_id(c["id"])}", "spec": '
+            f"{_json.dumps(c.get('spec', {}))}}}] "
+            f"with that spec edited to make the change.")
     listing = "; ".join(
-        f"{m['id']} (observed: {m.get('observed') or 'not measured'})"
+        f"{short_id(m['id'])} (observed: {m.get('observed') or 'not measured'})"
         for m in candidates[:4])
     raise ValueError(
-        f"the instruction is about {want}, but this patch touches none. "
+        f"the instruction is about {want}, but this patch changes none. "
         f"The {want} artifacts in this game are: {listing}. "
-        f"Target the one whose observed facts show the problem, or explain the "
-        f"change as an ADD of type {want}.")
+        f"MODIFY the one whose observed facts show the problem — its target is "
+        f"its id from that list.")
 
 
 # Required spec keys per task type, for patch ops. The fresh decomposer gets these
@@ -289,7 +318,8 @@ def repair_patch_list(patch_tasks, manifest_rows) -> None:
     def resolve(value):
         if not isinstance(value, str) or value in known or value in new_ids:
             return value
-        hits = [k for k in known if k.endswith("-" + value)]
+        hits = [k for k in known if short_id(k) == value] \
+            or [k for k in known if k.endswith("-" + value)]
         return hits[0] if len(hits) == 1 else value
 
     def walk(v):

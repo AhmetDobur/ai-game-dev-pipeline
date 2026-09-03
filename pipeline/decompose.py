@@ -285,8 +285,9 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
     from .patch import (check_patch_grounding, collapse_duplicate_adds,
                         repair_patch_list, validate_patch_list,
                         validate_patch_specs)
+    from .patch import short_id
     lines = "\n".join(
-        f"{m['id']} — {m['type']} — asked for: {m['summary']}\n"
+        f"{short_id(m['id'])} — {m['type']} — asked for: {m['summary']}\n"
         f"{' ' * 4}observed: {m.get('observed') or '(not measured)'}"
         for m in manifest_rows)
     ref_note = ", ".join(reference_images) if reference_images else "none"

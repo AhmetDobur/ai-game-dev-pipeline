@@ -753,3 +753,37 @@ def test_invented_spec_keys_are_reported_with_the_real_shape():
     except ValueError as e:
         for k in ("mesh_from", "body_plan", "animations"):
             assert k in str(e)
+
+
+def test_router_sees_short_ids_and_either_form_is_accepted():
+    """A 7B will not copy twenty 25-character run-scoped ids exactly — in a live
+    run it wrote the bare form regardless. Show the short form, accept both."""
+    from pipeline.patch import repair_patch_list, short_id
+    assert short_id("349edb5bf375-hero_anim") == "hero_anim"
+    assert short_id("hero_anim") == "hero_anim"          # already short
+    assert short_id("notarunid1234-x") == "notarunid1234-x"   # not 12 hex
+    rows = _rows_with_specs()
+    for written in ("hero_mesh", "349e-hero_mesh"):
+        ops = [{"target": written, "spec": {}}]
+        repair_patch_list(ops, rows)
+        assert ops[0]["target"] == "349e-hero_mesh", written
+
+
+def test_single_candidate_grounding_hands_over_the_exact_reply():
+    """The check exists to be grounded in measured facts, not to make a 7B
+    rediscover the target on its third try — which it demonstrably did not."""
+    import json as _json
+    from pipeline.patch import check_patch_grounding
+    rows = _rows_with_specs()
+    try:
+        check_patch_grounding([{"target": "349e-hero_art", "spec": {"prompt": "x"}}],
+                              rows, "make the animation more realistic")
+        raise AssertionError("wrong-target patch accepted")
+    except ValueError as e:
+        msg = str(e)
+        assert '"target": "hero_anim"' in msg          # short id, ready to copy
+        assert "NOT SKINNED" in msg                    # the measured reason
+        # the handed-over spec must be the real current one, valid to send back
+        payload = _json.loads(msg[msg.index("[{"):msg.index("}]") + 2])
+        assert payload[0]["spec"]["mesh_from"] == "349e-hero_mesh"
+        assert payload[0]["spec"]["body_plan"] == "humanoid"
