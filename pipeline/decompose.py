@@ -64,6 +64,12 @@ Example (a different, minimal game — copy the STRUCTURE, not the content):
  {{"id": "hero_anim", "type": "rig_animate", "depends_on": ["hero_mesh"],
    "spec": {{"mesh_from": "hero_mesh", "body_plan": "humanoid",
              "animations": ["idle", "walk"], "extras": []}}}},
+ {{"id": "crate_art", "type": "design_2d", "depends_on": [],
+   "spec": {{"prompt": "a wooden crate, single isolated object, centered, plain background",
+             "purpose": "concept for a level prop"}}}},
+ {{"id": "crate_mesh", "type": "design_3d", "depends_on": ["crate_art"],
+   "spec": {{"prompt": "the wooden crate as a game-ready prop mesh",
+             "concept_from": "crate_art"}}}},
  {{"id": "player", "type": "code", "depends_on": ["hero_anim"],
    "spec": {{"file": "scripts/player.gd",
              "description": "CharacterBody3D controller: WASD moves, camera follows"}}}},
@@ -71,7 +77,8 @@ Example (a different, minimal game — copy the STRUCTURE, not the content):
    "spec": {{"file": "scenes/main.tscn",
              "description": "main scene: ground plane, light, spawns the player"}}}},
  {{"id": "build", "type": "assemble", "depends_on": ["hero_art", "hero_mesh",
-   "hero_anim", "player", "level"], "spec": {{"export_preset": "Windows Desktop"}}}}
+   "hero_anim", "crate_art", "crate_mesh", "player", "level"],
+   "spec": {{"export_preset": "Windows Desktop"}}}}
 ]
 
 Game description:
@@ -253,6 +260,11 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
             if isinstance(fd, dict):
                 moves = {k: v for k, v in fd.items()
                          if isinstance(v, dict) and "startup" in v}
+                # the grader hard-loads scripts/combat_sim.gd, so frame_data on
+                # any other file is either hallucinated timing (a router once
+                # gave "idle" a startup) or unfulfillable grading — drop both
+                if not str(t["spec"].get("file", "")).endswith("combat_sim.gd"):
+                    moves = {}
                 if moves:
                     t["spec"]["frame_data"] = moves
                 else:

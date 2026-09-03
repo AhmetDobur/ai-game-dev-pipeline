@@ -169,3 +169,20 @@ def test_router_omissions_repaired():
     assert "ref_image" not in by["shelf"]["spec"]               # isolation strips it
     assert "single isolated object" in by["shelf"]["spec"]["prompt"]
     validate_task_list(tasks)
+
+
+def test_frame_data_only_on_combat_sim():
+    fd = {"punch": {"startup": 3, "active": 2, "hitstun": 5,
+                    "knockback": [1, 0], "tolerance": 0}}
+    tasks = [
+        {"id": "lib", "type": "code", "depends_on": [],
+         "spec": {"file": "scripts/library.gd", "description": "env",
+                  "frame_data": dict(fd)}},
+        {"id": "sim", "type": "code", "depends_on": [],
+         "spec": {"file": "scripts/combat_sim.gd", "description": "combat",
+                  "frame_data": dict(fd)}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks)
+    assert "frame_data" not in tasks[0]["spec"]   # typed junk on the wrong file
+    assert tasks[1]["spec"]["frame_data"] == fd   # the real contract survives
