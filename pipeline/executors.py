@@ -177,7 +177,9 @@ def build_executors(cfg: dict, workspace: Path,
         ref = _ref_file(task)
         if ref:
             from .refimage import crop_main_subject
-            subs["image"] = str(crop_main_subject(ref, out_dir / "ref_crop.png"))
+            subs["image"] = str(crop_main_subject(
+                ref, out_dir / "ref_crop.png",
+                int(task["spec"].get("ref_subject", 0))))
         elif task["spec"].get("concept_from"):
             subs["image"] = str(_resolve_dep(task, task["spec"]["concept_from"]))
         else:

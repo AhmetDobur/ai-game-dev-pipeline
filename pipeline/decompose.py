@@ -395,9 +395,19 @@ def repair_task_list(tasks, reference_images: list[str] | None = None,
     char_refs = _named(("char", "hero", "player", "figure", "portrait"))
     rig_meshes = {t["spec"].get("mesh_from") for t in tasks
                   if isinstance(t, dict) and t.get("type") == "rig_animate"}
-    for t in d3:
-        if char_refs and t.get("id") in rig_meshes and not t["spec"].get("ref_image"):
+    # each character mesh takes a DIFFERENT figure: one sheet per character when
+    # the operator dropped several, otherwise successive figures off the shared
+    # sheet. Handing every hero char_refs[0] built the same character twice.
+    char_meshes = [t for t in d3 if t.get("id") in rig_meshes
+                   and not t["spec"].get("ref_image")]
+    for i, t in enumerate(char_meshes):
+        if not char_refs:
+            break
+        if i < len(char_refs):
+            t["spec"]["ref_image"] = char_refs[i]
+        else:
             t["spec"]["ref_image"] = char_refs[0]
+            t["spec"]["ref_subject"] = i
     d2_backdrops = [t for t in tasks if isinstance(t, dict)
                     and t.get("type") == "design_2d" and t.get("id") not in
                     {x["spec"].get("concept_from") for x in d3}]

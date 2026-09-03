@@ -1,8 +1,9 @@
-"""Reference-image preparation: crop a multi-figure sheet to its main subject.
+"""Reference-image preparation: crop a multi-figure sheet to one subject.
 
 TRELLIS reconstructs everything in frame, so a character sheet with turnarounds
 becomes N meshes. Before conditioning 3D generation on a user reference we crop
-it to the single largest figure. Pure Pillow — no numpy/opencv on the box.
+it to a single figure, selected by `index` — a two-hero sheet has two figures
+worth reconstructing. Pure Pillow — no numpy/opencv on the box.
 """
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from PIL import Image
 _SCALE = 192          # analysis resolution; components found here, crop on original
 _BG_TOLERANCE = 34    # per-channel distance from the border-median background color
 _FULL_FRAME = 0.80    # largest blob covers this much -> already single-subject
+_ERODE_PX = 4         # breaks the prop bridges between touching figures
+_MIN_RELATIVE_SIZE = 0.15   # a second hero is a sizeable fraction of the first
+_MIN_FIGURE_ASPECT = 1.3    # standing characters are taller than they are wide
 
 
 def _background_color(px, w: int, h: int) -> tuple[int, int, int]:
@@ -55,12 +59,15 @@ def _erode(mask: list[list[bool]], passes: int = 2) -> list[list[bool]]:
     return mask
 
 
-def _largest_component(mask: list[list[bool]]) -> tuple[int, int, int, int, int]:
-    """Iterative 4-connected flood fill. Returns (size, x0, y0, x1, y1) of the
-    largest foreground blob. Small: analysis image is <=192px a side."""
+def _components(mask: list[list[bool]]) -> list[tuple[int, int, int, int, int]]:
+    """Every 4-connected blob as (size, x0, y0, x1, y1), largest first.
+
+    A two-hero character sheet has two figures worth reconstructing, so the
+    caller needs more than the winner. Small: analysis image is <=192px a side.
+    """
     h, w = len(mask), len(mask[0])
     seen = [[False] * w for _ in range(h)]
-    best = (0, 0, 0, 0, 0)
+    found = []
     for sy in range(h):
         for sx in range(w):
             if not mask[sy][sx] or seen[sy][sx]:
@@ -76,55 +83,40 @@ def _largest_component(mask: list[list[bool]]) -> tuple[int, int, int, int, int]
                     if 0 <= nx < w and 0 <= ny < h and mask[ny][nx] and not seen[ny][nx]:
                         seen[ny][nx] = True
                         stack.append((nx, ny))
-            if size > best[0]:
-                best = (size, x0, y0, x1, y1)
-    return best
+            found.append((size, x0, y0, x1, y1))
+    found.sort(key=lambda c: -c[0])
+    return found
 
 
-def _xy_cut(mask, x0: int, y0: int, x1: int, y1: int, depth: int = 4) -> list:
-    """Recursive XY-cut: split the region at its widest empty row/column band
-    (near-zero foreground), the classic layout segmentation. Character sheets
-    are grids of figures; connected-component analysis alone can't separate
-    figures that touch through props, but the gaps between grid cells can."""
-    if depth == 0 or x1 - x0 < 8 or y1 - y0 < 8:
-        return [(x0, y0, x1, y1)]
-    col = [sum(mask[y][x] for y in range(y0, y1)) for x in range(x0, x1)]
-    row = [sum(mask[y][x] for x in range(x0, x1)) for y in range(y0, y1)]
+def _subjects(mask: list[list[bool]]) -> list[tuple[int, int, int, int, int]]:
+    """Figure-like blobs, largest first: big enough, and taller than wide.
 
-    def widest_gap(profile, span):
-        """Widest INTERIOR low-density run. Border runs (outer margins) are not
-        separators and must be skipped, not allowed to veto a real interior gap."""
-        limit = max(1, int(0.02 * span))
-        best, cur_start, i0, i1 = 0, None, 0, 0
-        for i, v in enumerate(profile + [limit + 1]):
-            if v <= limit and i < len(profile):
-                if cur_start is None:
-                    cur_start = i
-            elif cur_start is not None:
-                interior = cur_start > 0 and i < len(profile)
-                if interior and i - cur_start > best:
-                    best, i0, i1 = i - cur_start, cur_start, i
-                cur_start = None
-        return best, i0, i1
-
-    cg, cs, ce = widest_gap(col, y1 - y0)
-    rg, rs, re_ = widest_gap(row, x1 - x0)
-    cut_col = cg >= 3   # widest_gap only ever returns interior runs
-    cut_row = rg >= 3
-    if cut_col and (cg >= rg or not cut_row):
-        mid = x0 + (cs + ce) // 2
-        return (_xy_cut(mask, x0, y0, mid, y1, depth - 1)
-                + _xy_cut(mask, mid, y0, x1, y1, depth - 1))
-    if cut_row:
-        mid = y0 + (rs + re_) // 2
-        return (_xy_cut(mask, x0, y0, x1, mid, depth - 1)
-                + _xy_cut(mask, x0, mid, x1, y1, depth - 1))
-    return [(x0, y0, x1, y1)]
+    Replaces an XY-cut layout split that put a sheet's two heroes in different
+    layout cells, so only ever one of them could be reached. The size threshold
+    does the job the cell split was there for — rejecting the sheet's prop row —
+    while keeping every real figure. Falls back to the largest blob when nothing
+    is figure-shaped, so a prop or environment reference still crops as before.
+    """
+    comps = _components(mask)
+    if not comps:
+        return []
+    big = comps[0][0]
+    figures = [c for c in comps
+               if c[0] >= _MIN_RELATIVE_SIZE * big
+               and (c[4] - c[2] + 1) / max(c[3] - c[1] + 1, 1) >= _MIN_FIGURE_ASPECT]
+    return figures or comps[:1]
 
 
-def crop_main_subject(src: Path, dst: Path) -> Path:
-    """Write a crop of src's largest connected figure to dst (PNG). Falls back to
-    the original image whenever analysis is inconclusive — never blocks a run."""
+def crop_main_subject(src: Path, dst: Path, index: int = 0) -> Path:
+    """Write a crop of one of src's figures to dst (PNG), largest figure first.
+
+    `index` picks among the figures on a multi-hero sheet. It clamps to the
+    largest rather than failing, so a plan asking for a second character on a
+    single-character sheet still produces a mesh; the clamp is logged, because
+    two characters silently built from one crop is the failure that matters.
+    Falls back to the original image whenever analysis is inconclusive — never
+    blocks a run.
+    """
     try:
         img = Image.open(src).convert("RGB")
     except Exception:  # OSError, DecompressionBombError, ... — never block a run
@@ -133,20 +125,17 @@ def crop_main_subject(src: Path, dst: Path) -> Path:
     scale = max(w, h) / _SCALE
     small = img.resize((max(1, round(w / scale)), max(1, round(h / scale)))) \
         if scale > 1 else img.copy()
-    erode_px = 4   # breaks prop bridges; bbox is re-expanded below
+    erode_px = _ERODE_PX   # breaks prop bridges; bbox is re-expanded below
     mask = _erode(_foreground_mask(small), erode_px)
     sw, sh = small.size
-    # XY-cut the sheet into layout cells, keep the densest cell, then take the
-    # largest connected figure inside it
-    cells = _xy_cut(mask, 0, 0, sw, sh)
-    def density(c):
-        return sum(mask[y][x] for y in range(c[1], c[3]) for x in range(c[0], c[2]))
-    cx0, cy0, cx1, cy1 = max(cells, key=density)
-    cell_mask = [[mask[y][x] if cx0 <= x < cx1 and cy0 <= y < cy1 else False
-                  for x in range(sw)] for y in range(sh)]
-    size, x0, y0, x1, y1 = _largest_component(cell_mask)
-    if size == 0:
+    figures = _subjects(mask)
+    if not figures:
         return src  # nothing detected — don't guess
+    if index >= len(figures):
+        print(f"[refimage] {Path(src).name}: asked for figure {index}, found "
+              f"{len(figures)} — using the largest", flush=True)
+        index = 0
+    _, x0, y0, x1, y1 = figures[index]
     x0, y0 = max(0, x0 - erode_px), max(0, y0 - erode_px)     # undo erosion shrink
     x1, y1 = min(sw - 1, x1 + erode_px), min(sh - 1, y1 + erode_px)
     blob_w, blob_h = x1 - x0 + 1, y1 - y0 + 1

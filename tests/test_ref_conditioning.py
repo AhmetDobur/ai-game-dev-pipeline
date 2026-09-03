@@ -381,3 +381,55 @@ def test_assemble_validation_ignores_the_world_screenshot(tmp_path):
     shot.write_bytes(b"x" * 30_000)
     ok, detail = validate({"type": "assemble", "spec": {}}, [exe, shot])
     assert ok is True, detail
+
+
+def _duo(path: Path) -> Path:
+    """Two heroes of comparable size plus a squat prop — a two-character sheet."""
+    img = Image.new("RGB", (600, 400), (18, 16, 14))
+    px = img.load()
+    for x in range(60, 200):        # hero A, 140x320
+        for y in range(40, 360):
+            px[x, y] = (200, 180, 150)
+    for x in range(320, 430):       # hero B, 110x290
+        for y in range(60, 350):
+            px[x, y] = (190, 170, 140)
+    for x in range(470, 510):       # prop: small and wider-than-tall-ish
+        for y in range(300, 350):
+            px[x, y] = (180, 160, 130)
+    img.save(path)
+    return path
+
+
+def test_crop_index_selects_second_hero(tmp_path):
+    """Both characters must be reachable: handing every hero the same crop is
+    how the pipeline shipped one character twice."""
+    src = _duo(tmp_path / "duo.png")
+    a = crop_main_subject(src, tmp_path / "a.png", 0)
+    b = crop_main_subject(src, tmp_path / "b.png", 1)
+    assert a.exists() and b.exists()
+    assert a.read_bytes() != b.read_bytes()
+    assert Image.open(a).size[0] > Image.open(b).size[0]   # A is the larger hero
+
+
+def test_crop_index_ignores_props(tmp_path):
+    """The prop is neither big enough nor tall enough to count as a figure, so
+    asking for a third subject clamps back to the largest."""
+    src = _duo(tmp_path / "duo.png")
+    a = crop_main_subject(src, tmp_path / "a.png", 0)
+    c = crop_main_subject(src, tmp_path / "c.png", 2)
+    assert a.read_bytes() == c.read_bytes()
+
+
+def test_two_char_meshes_get_different_subjects():
+    """decompose must hand the two character meshes different figures."""
+    tasks = [
+        {"id": "m1", "type": "design_3d", "deps": [], "spec": {"prompt": "hero one"}},
+        {"id": "m2", "type": "design_3d", "deps": [], "spec": {"prompt": "hero two"}},
+        {"id": "r1", "type": "rig_animate", "deps": ["m1"], "spec": {"mesh_from": "m1"}},
+        {"id": "r2", "type": "rig_animate", "deps": ["m2"], "spec": {"mesh_from": "m2"}},
+    ]
+    repair_task_list(tasks, ["refs/duo_char.png"])
+    meshes = {t["id"]: t["spec"] for t in tasks if t.get("type") == "design_3d"}
+    assert meshes["m1"]["ref_image"] == meshes["m2"]["ref_image"]  # one sheet
+    subjects = {meshes["m1"].get("ref_subject", 0), meshes["m2"].get("ref_subject", 0)}
+    assert subjects == {0, 1}, f"both meshes took the same figure: {subjects}"
