@@ -210,6 +210,21 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                 slug = re.sub(r"[^a-z0-9_]+", "_", str(t.get("id", "task")).lower())
                 t["spec"]["file"] = f"scripts/{slug}.gd"
         t["depends_on"] = sorted(deps)
+    # concept art that feeds TRELLIS must be ONE isolated object: img2img from a
+    # scene reference forces whole-room composition into the concept, and TRELLIS
+    # turns a room image into polygon noise. Style lives in the prompt text; the
+    # scene reference stays only on design_2d art that no mesh is built from.
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    for t in tasks:
+        if not (isinstance(t, dict) and t.get("type") == "design_3d"):
+            continue
+        c = by_id.get(t.get("spec", {}).get("concept_from"))
+        if isinstance(c, dict) and c.get("type") == "design_2d":
+            c["spec"].pop("ref_image", None)
+            p = c["spec"].get("prompt", "")
+            if "isolated" not in p:
+                c["spec"]["prompt"] = (p + ", single isolated object, centered, "
+                                       "plain white background, product render")
     # non-ASCII ids (a Qwen router drifts into Chinese) slug to the same file —
     # de-collide deterministically. frame_data tasks claim their name FIRST: the
     # combat grader hard-loads res://scripts/combat_sim.gd, so the graded task

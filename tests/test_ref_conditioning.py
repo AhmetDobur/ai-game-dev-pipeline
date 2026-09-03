@@ -93,3 +93,25 @@ def test_world_tscn_environment_and_props():
     assert scene.count('shape = SubResource("prop_shape")') == 4
     assert scene.count("instance=ExtResource") == 5         # 4 props + player mesh
     assert "character.glb" in scene
+
+
+def test_prop_concept_isolated_from_scene_ref():
+    # a design_2d feeding TRELLIS loses its scene ref and gains isolation phrasing;
+    # a design_2d feeding nothing keeps its ref (pure art / backdrop)
+    tasks = [
+        {"id": "shelf_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a bookshelf", "ref_image": "lib.png"}},
+        {"id": "shelf", "type": "design_3d", "depends_on": ["shelf_art"],
+         "spec": {"prompt": "shelf mesh", "concept_from": "shelf_art"}},
+        {"id": "backdrop", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "library mural", "ref_image": "lib.png"}},
+        {"id": "player", "type": "code", "depends_on": [],
+         "spec": {"file": "scripts/player.gd", "description": "controller"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks, ["lib.png"])
+    assert "ref_image" not in tasks[0]["spec"]
+    assert "single isolated object" in tasks[0]["spec"]["prompt"]
+    assert tasks[2]["spec"]["ref_image"] == "lib.png"
+    assert "isolated" not in tasks[2]["spec"]["prompt"]
+    validate_task_list(tasks)

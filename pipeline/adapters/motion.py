@@ -39,9 +39,16 @@ class MotionStage:
                 [self.blender, "--background", "--python", script, "--",
                  str(glb), str(out)],
                 capture_output=True, encoding="utf-8", errors="replace", timeout=300)
-            return out if r.returncode == 0 and out.exists() else None
-        except Exception:  # cosmetic side-channel: NOTHING here may block a run
-            return None
+            if r.returncode == 0 and out.exists():
+                return out
+            failure = f"rc={r.returncode}\n{r.stdout}\n{r.stderr}"
+        except Exception as e:  # cosmetic side-channel: NOTHING here may block a run
+            failure = repr(e)
+        try:  # leave the cause on disk — silent preview loss is undiagnosable
+            glb.with_suffix(".preview.log").write_text(failure, encoding="utf-8")
+        except OSError:
+            pass
+        return None
 
     def build(self, mesh_path: Path, body_plan: str, animations: list[str],
               extras: list[str], out_dir: Path) -> list[Path]:

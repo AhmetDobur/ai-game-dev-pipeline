@@ -159,11 +159,19 @@ def crop_main_subject(src: Path, dst: Path) -> Path:
     cx1 = min(w, int((x1 + 1 + blob_w * margin) * f))
     cy1 = min(h, int((y1 + 1 + blob_h * margin) * f))
     crop = img.crop((cx0, cy0, cx1, cy1))
-    # square canvas in the sheet's own background color: TRELLIS conditioning
-    # expects a centered subject, not an off-aspect sliver
+    # square canvas, subject matted onto flat white: TRELLIS rebuilds whatever is
+    # in frame, so a kept dark backdrop becomes a card mesh and stray sheet
+    # furniture (measure lines, neighbours' props) becomes duplicate geometry
     side = max(crop.size)
-    canvas = Image.new("RGB", (side, side), _background_color(img.load(), w, h))
-    canvas.paste(crop, ((side - crop.size[0]) // 2, (side - crop.size[1]) // 2))
+    pos = ((side - crop.size[0]) // 2, (side - crop.size[1]) // 2)
+    try:
+        from rembg import remove
+        cut = remove(crop)  # RGBA soft matte at crop resolution
+        canvas = Image.new("RGB", (side, side), (255, 255, 255))
+        canvas.paste(cut, pos, cut)
+    except Exception:  # rembg unavailable -> old behavior: sheet background color
+        canvas = Image.new("RGB", (side, side), _background_color(img.load(), w, h))
+        canvas.paste(crop, pos)
     dst.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(dst, "PNG")
     return dst
