@@ -387,7 +387,9 @@ extract (cu126 is the safe pick for Turing cards like the Titan RTX).
   `ComfyUI\models\checkpoints\`. The bundled `workflows/sdxl.json` works as-is
   (1024×1024, DPM++ 2M Karras, 30 steps). Style-lock via IP-Adapter/LoRA can
   be added to that JSON later without touching pipeline code.
-- **TRELLIS.2** (image→3D, MIT — commercial-ok): **native in current ComfyUI**,
+- **TRELLIS.2** (image→3D, MIT — commercial-ok; note its `dino_v3_vit_l` CLIPVision
+  encoder is **not** MIT but under Meta's DINOv3 licence — commercial use is allowed,
+  but it obliges a "Built with DINOv3" attribution on distribution): **native in current ComfyUI**,
   no custom-node pack needed. Download the four weights from
   `huggingface.co/Comfy-Org/TRELLIS.2` into the matching model folders:
   `diffusion_models/trellis_2_bf16.safetensors`,
