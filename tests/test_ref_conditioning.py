@@ -458,3 +458,12 @@ def test_one_character_keeps_single_camera():
     assert "SubViewport" not in scene
     assert scene.count('type="Camera3D"') == 1
     assert '[node name="Player" type="CharacterBody3D"' in scene
+
+
+def test_players_face_the_apse():
+    """Spawns sit at the hall's near end; unrotated bodies face -Z and would
+    start nose-to-wall with the whole room behind them."""
+    from pipeline.scaffold import _world_tscn, SPAWN_Z
+    scene = _world_tscn("res://scripts/player.gd", ["res://a/character.glb"], [])
+    assert f"Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0.0, 1.2, {SPAWN_Z})" in scene
+    assert "position = Vector3(0.0, 1.2," not in scene   # no unrotated spawn left

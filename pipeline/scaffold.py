@@ -221,8 +221,11 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
         # fails to load raises a parse error that drops every node after it in
         # the file, and losing the pivot means the player cannot look or aim.
         # Movement must survive a missing asset.
+        # yaw 180 deg: spawns are at the hall's near end and Godot bodies face
+        # -Z, so an unrotated player starts nose-to-wall with the apse, the rose
+        # window and every candle behind them
         out.append(f"""[node name="{name}" type="CharacterBody3D" parent="."]
-position = Vector3({round(x, 2)}, 1.2, {SPAWN_Z})
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, {round(x, 2)}, 1.2, {SPAWN_Z})
 {script}
 [node name="Collision" type="CollisionShape3D" parent="{name}"]
 position = Vector3(0, 0.9, 0)
