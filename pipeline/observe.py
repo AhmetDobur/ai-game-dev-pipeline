@@ -15,7 +15,8 @@ nothing rather than a guess, and never raises.
 import json
 from pathlib import Path
 
-from .inspect3d import clips, has_skin, metrics_for
+from .inspect3d import (MIN_RELATIVE_THICKNESS, clips, geometry,
+                        has_skin, metrics_for)
 
 MAX_FACTS = 240      # keep the manifest readable for a small router
 
@@ -43,16 +44,21 @@ def _rig_facts(mesh: Path) -> list[str]:
 
 
 def _mesh_facts(mesh: Path) -> list[str]:
+    # prefer the preview stage's metrics; fall back to the glb itself, which
+    # always carries a bounding box, so a mesh on disk is never "not measured"
     m = metrics_for(mesh)
-    if not m:
-        return []
-    bb = m.get("bbox") or []
+    g = geometry(mesh)
     facts = []
+    bb = (m or {}).get("bbox") or (g or {}).get("dims") or []
     if len(bb) == 3:
         facts.append("size " + "x".join(str(round(float(v), 2)) for v in bb))
-    if m.get("faces"):
-        facts.append(f"{m['faces']} faces")
-    if m.get("aspect") and float(m["aspect"]) > 20:
+    faces = (m or {}).get("faces") or (g or {}).get("faces")
+    if faces:
+        facts.append(f"{faces} faces")
+    thin = (g or {}).get("thinness")
+    if (m or {}).get("aspect") and float(m["aspect"]) > 20:
+        facts.append("FLAT PLANE, not a solid")
+    elif thin is not None and thin < MIN_RELATIVE_THICKNESS:
         facts.append("FLAT PLANE, not a solid")
     return facts
 

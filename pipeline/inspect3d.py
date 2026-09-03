@@ -81,6 +81,43 @@ def clips(mesh: Path) -> list[dict]:
     return out
 
 
+def geometry(mesh: Path) -> dict | None:
+    """Size and face count straight from the .glb, independent of any sidecar.
+
+    glTF requires POSITION accessors to carry min/max, so the bounding box is
+    always readable from the file itself. metrics_for() only exists when the
+    preview stage happened to run, and for most meshes it never did -- which
+    left the router told "not measured" about a mesh sitting right there on disk.
+    """
+    doc = gltf_doc(mesh)
+    if not doc:
+        return None
+    acc = doc.get("accessors", [])
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    tris = 0
+    for m in doc.get("meshes", []):
+        for prim in m.get("primitives", []):
+            i = prim.get("attributes", {}).get("POSITION")
+            if i is None or i >= len(acc):
+                continue
+            a = acc[i]
+            if not (a.get("min") and a.get("max")):
+                continue
+            for k in range(3):
+                lo[k] = min(lo[k], float(a["min"][k]))
+                hi[k] = max(hi[k], float(a["max"][k]))
+            n = acc[prim["indices"]]["count"] if prim.get("indices") is not None \
+                else a.get("count", 0)
+            tris += n // 3
+    if any(v == float("inf") for v in lo):
+        return None
+    dims = [round(hi[k] - lo[k], 3) for k in range(3)]
+    span = max(dims) or 1.0
+    return {"dims": dims, "faces": tris,
+            "thinness": round(min(dims) / span, 4)}
+
+
 def has_skin(mesh: Path) -> bool | None:
     """Does this .glb bind its mesh to a skeleton? None when it cannot be read.
 

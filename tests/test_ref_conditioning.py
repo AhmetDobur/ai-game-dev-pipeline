@@ -657,3 +657,37 @@ def test_manifest_carries_observed_facts(tmp_path):
     assert "run" in obs and "1.5s" in obs
     assert "NOT SKINNED" in obs          # the spec would never have said so
     assert rows[0]["summary"] == "idle,walk,run"   # what was asked for, unchanged
+
+
+def test_mesh_facts_come_from_the_glb_when_no_preview_ran(tmp_path):
+    """The preview stage rarely runs, and a mesh sitting on disk should never be
+    reported to the router as 'not measured'."""
+    import struct
+    from pipeline.inspect3d import geometry
+    from pipeline.observe import facts_for
+    doc = {
+        "asset": {"version": "2.0"},
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "accessors": [{"min": [-0.45, 0.0, -0.3], "max": [0.45, 1.8, 0.3], "count": 8},
+                      {"count": 120600}],
+    }
+    mesh = _glb(tmp_path / "hero.glb", doc)
+    g = geometry(mesh)
+    assert g["dims"] == [0.9, 1.8, 0.6] and g["faces"] == 40200
+    obs = facts_for("design_3d", str(mesh))
+    assert "0.9x1.8x0.6" in obs and "40200 faces" in obs
+
+
+def test_flat_plane_is_reported_from_the_glb(tmp_path):
+    """TRELLIS returns 3 mm sheets that pass every byte check; the router must be
+    told, not left to infer it from a prompt that still says 'a bookshelf'."""
+    from pipeline.observe import facts_for
+    doc = {
+        "asset": {"version": "2.0"},
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+        "accessors": [{"min": [-0.5, -0.0015, -0.5], "max": [0.5, 0.0015, 0.5],
+                       "count": 300}],
+    }
+    assert "FLAT PLANE" in facts_for("design_3d", str(_glb(tmp_path / "flat.glb", doc)))
