@@ -47,7 +47,8 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
 
         router = LlamaServer(cfg["paths"]["llama_server"], cfg["llm"]["router_gguf"],
                              cfg["llm"]["router_port"], cfg["llm"]["router_ctx_size"],
-                             cfg["llm"]["load_timeout_s"])
+                             cfg["llm"]["load_timeout_s"],
+                             extra_args=cfg["llm"]["router_extra_args"])
         coder = LlamaServer(cfg["paths"]["llama_server"], cfg["llm"]["coder_gguf"],
                             cfg["llm"]["coder_port"], cfg["llm"]["ctx_size"],
                             cfg["llm"]["load_timeout_s"],

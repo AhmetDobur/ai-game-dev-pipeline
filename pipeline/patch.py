@@ -140,7 +140,12 @@ def build_patch_graph(parent_rows: list[dict], patch_tasks: list[dict],
             tgt = _scalar(pt["target"])
             if tgt not in rows:
                 raise ValueError(f"patch target {pt['target']!r} is not an artifact in this game")
-            rows[tgt]["spec"] = remap(pt["spec"])
+            # merge, don't replace: the prompt says "a MODIFY spec is the FULL
+            # new spec" and a 7B router reliably sends only the keys it changed.
+            # A wholesale replace then drops mesh_from/file/description, which
+            # the executors index directly, and the task dies mid-revision.
+            rows[tgt]["spec"] = {**(rows[tgt].get("spec") or {}),
+                                 **remap(pt["spec"])}
             seeds.add(tgt)
         else:
             nid = id_map[pt["id"]]
@@ -222,9 +227,10 @@ def validate_patch_list(patch_tasks, manifest_ids: set[str]) -> None:
 # catch the MAIN mistake -- a router that was asked about the animation and went
 # and rewrote the concept art -- not to adjudicate subtle wording.
 _DOMAIN_WORDS = {
-    "rig_animate": ("animation", "animate", "anim ", "motion", "walk", "walking",
-                    "run ", "running", "idle", "rig", "skeleton", "movement",
-                    "moves", "moving"),
+    "rig_animate": ("animation", "animations", "animate", "anim", "motion",
+                    "walk", "walking", "walks", "run", "running", "runs",
+                    "idle", "rig", "rigged", "skeleton", "bone", "bones",
+                    "movement", "move", "moves", "moving", "pose", "clip"),
     "design_2d": ("concept art", "artwork", "texture", "palette", "colour",
                   "color", "art style"),
     "design_3d": ("mesh", "model", "geometry", "sculpt", "silhouette",
@@ -234,11 +240,20 @@ _DOMAIN_WORDS = {
              "camera", "logic"),
 }
 
+# Whole words only. Substring matching looked equivalent and was not: "rig" is
+# inside trigger/upright/original, "walk" inside walkway, "run" inside run-time.
+# Every one of those made a code or design patch look like an animation patch,
+# and check_patch_grounding would then reject a correct patch and dictate the
+# wrong artifact to the retry. Multi-word entries ("concept art") stay literal.
+_DOMAIN_RE = {
+    kind: re.compile("|".join(rf"\b{re.escape(w)}\b" for w in words))
+    for kind, words in _DOMAIN_WORDS.items()
+}
+
 
 def instruction_domains(instruction: str) -> set[str]:
-    text = " " + (instruction or "").lower() + " "
-    return {kind for kind, words in _DOMAIN_WORDS.items()
-            if any(w in text for w in words)}
+    text = (instruction or "").lower()
+    return {kind for kind, rx in _DOMAIN_RE.items() if rx.search(text)}
 
 
 def check_patch_grounding(patch_tasks, manifest_rows, instruction) -> None:
@@ -339,6 +354,17 @@ def repair_patch_list(patch_tasks, manifest_rows) -> None:
         pt["depends_on"] = [resolve(d) for d in pt.get("depends_on", [])]
         if isinstance(pt.get("spec"), dict):
             pt["spec"] = walk(pt["spec"])
+        # a spec reference IS a dependency -- the fresh decomposer has always
+        # repaired this (decompose.repair_task_list) and the patch path did not,
+        # so an ADD with depends_on:[] got dispatched before its input existed
+        # and _resolve_dep raised "no resolvable output".
+        if "target" not in pt and isinstance(pt.get("spec"), dict):
+            deps = list(pt.get("depends_on") or [])
+            for key in ("concept_from", "mesh_from"):
+                v = pt["spec"].get(key)
+                if isinstance(v, str) and v in known and v not in deps:
+                    deps.append(v)
+            pt["depends_on"] = deps
 
 
 def collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs) -> None:
@@ -362,6 +388,16 @@ def collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs) -> None:
         spec = pt.get("spec") or {}
         src = spec.get("mesh_from") or spec.get("concept_from") or spec.get("file")
         existing = by_type_src.get((pt.get("type"), src))
+        # Sharing a source is how "add a SECOND statue from the same concept" is
+        # correctly written, so a same-source match alone cannot mean "duplicate".
+        # Only collapse when the ADD describes the same thing as the parent --
+        # a differing prompt/description/text means a new artifact was asked for,
+        # and collapsing it would both skip it and overwrite the original.
+        if existing:
+            parent = parent_specs.get(existing, {})
+            if any(k in spec and k in parent and spec[k] != parent[k]
+                   for k in ("prompt", "description", "text")):
+                continue
         if existing:
             merged = dict(parent_specs.get(existing, {}))
             merged.update(spec)          # keep the parent shape, apply the change
@@ -369,13 +405,25 @@ def collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs) -> None:
             pt.update({"target": existing, "spec": merged})
 
 
-def validate_patch_specs(patch_tasks) -> None:
-    """Every op's spec must have the keys its executor reads."""
+def validate_patch_specs(patch_tasks, manifest_rows=(), parent_specs=None) -> None:
+    """Every op's spec must have the keys its executor reads.
+
+    A MODIFY carries no "type" (the target row fixes it), so this used to skip
+    every MODIFY -- exactly the op it exists to guard. The type is knowable
+    without the router's help: look it up from the manifest. The spec checked is
+    the MERGED one, matching what build_patch_graph will store.
+    """
+    types = {m["id"]: m["type"] for m in manifest_rows}
+    parent_specs = parent_specs or {}
     for pt in patch_tasks:
         kind = pt.get("type")
         spec = pt.get("spec") or {}
-        if "target" in pt and not kind:
-            continue                     # MODIFY type is fixed by the target row
+        if "target" in pt:
+            tgt = pt["target"]
+            if tgt not in types:
+                continue                 # unknown target: validate_patch_list reports it
+            kind = types[tgt]
+            spec = {**parent_specs.get(tgt, {}), **spec}
         missing = [k for k in _REQUIRED_SPEC.get(kind, ()) if k not in spec]
         if missing:
             raise ValueError(

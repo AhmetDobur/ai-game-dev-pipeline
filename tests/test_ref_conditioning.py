@@ -787,3 +787,78 @@ def test_single_candidate_grounding_hands_over_the_exact_reply():
         payload = _json.loads(msg[msg.index("[{"):msg.index("}]") + 2])
         assert payload[0]["spec"]["mesh_from"] == "349edb5bf375-hero_mesh"
         assert payload[0]["spec"]["body_plan"] == "humanoid"
+
+
+# --- patch grounding + spec repair: five defects an adversarial review found ---
+
+_MANIFEST = [
+    {"id": "r1-hero_art", "type": "design_2d", "observed": "", "spec": {}},
+    {"id": "r1-hero_mesh", "type": "design_3d", "observed": "", "spec": {}},
+    {"id": "r1-hero_anim", "type": "rig_animate", "observed": "", "spec": {}},
+]
+_PARENT_SPECS = {
+    "r1-hero_art": {"prompt": "a knight"},
+    "r1-hero_mesh": {"prompt": "a knight", "concept_from": "r1-hero_art"},
+    "r1-hero_anim": {"mesh_from": "r1-hero_mesh", "body_plan": "humanoid",
+                     "animations": ["idle", "walk"], "extras": []},
+}
+
+
+def test_domain_words_match_whole_words_only():
+    """'trigger'/'upright'/'walkway' are not animation instructions."""
+    from pipeline.patch import instruction_domains
+    for text in ("make the attack trigger sooner", "keep the statue upright",
+                 "restore the original hitbox timing", "add a walkway to the apse"):
+        assert instruction_domains(text) == set(), text
+    # ...and the canonical phrasing still resolves
+    assert instruction_domains("the character does not move") == {"rig_animate"}
+    assert instruction_domains("make the player run faster") == {"rig_animate"}
+
+
+def test_modify_spec_merges_over_parent_instead_of_replacing():
+    """A partial MODIFY must not drop the keys the executor indexes."""
+    from pipeline.patch import build_patch_graph
+    parent = [{"id": "r1-hero_anim", "type": "rig_animate", "status": "done",
+               "spec": dict(_PARENT_SPECS["r1-hero_anim"]), "depends_on": [],
+               "attempts": 0, "output_path": "x.glb", "error": ""}]
+    rows, _ = build_patch_graph(parent, [{"target": "r1-hero_anim",
+                                          "spec": {"animations": ["idle", "walk", "run"]}}],
+                                "r1", "r2")
+    spec = next(r["spec"] for r in rows if r["type"] == "rig_animate")
+    assert spec["animations"] == ["idle", "walk", "run"]
+    assert spec["mesh_from"] == "r2-hero_mesh", "mesh_from was wiped by the MODIFY"
+    assert spec["body_plan"] == "humanoid"
+
+
+def test_add_op_gains_dependency_implied_by_its_spec():
+    from pipeline.patch import repair_patch_list
+    ops = [{"id": "attack_anim", "type": "rig_animate", "depends_on": [],
+            "spec": {"mesh_from": "hero_mesh", "body_plan": "humanoid",
+                     "animations": ["attack"]}}]
+    repair_patch_list(ops, _MANIFEST)
+    assert ops[0]["depends_on"] == ["r1-hero_mesh"]
+
+
+def test_a_second_artifact_from_the_same_source_is_not_collapsed():
+    from pipeline.patch import collapse_duplicate_adds
+    ops = [{"id": "statue2", "type": "design_3d", "depends_on": ["r1-hero_art"],
+            "spec": {"prompt": "a second knight statue", "concept_from": "r1-hero_art"}}]
+    collapse_duplicate_adds(ops, _MANIFEST, _PARENT_SPECS)
+    assert "target" not in ops[0], "a differently-described ADD was eaten as a MODIFY"
+    # a genuine re-emission of the same thing still collapses
+    dup = [{"id": "hero_mesh_again", "type": "design_3d", "depends_on": [],
+            "spec": {"prompt": "a knight", "concept_from": "r1-hero_art"}}]
+    collapse_duplicate_adds(dup, _MANIFEST, _PARENT_SPECS)
+    assert dup[0].get("target") == "r1-hero_mesh"
+
+
+def test_modify_specs_are_validated_against_the_targets_real_type():
+    import pytest
+    from pipeline.patch import validate_patch_specs
+    # merged spec is complete -> accepted
+    validate_patch_specs([{"target": "r1-hero_anim", "spec": {"animations": ["run"]}}],
+                         _MANIFEST, _PARENT_SPECS)
+    # parent had nothing to merge -> the missing keys are reported, not skipped
+    with pytest.raises(ValueError, match="mesh_from"):
+        validate_patch_specs([{"target": "r1-hero_anim", "spec": {"skin_to_rig": True}}],
+                             _MANIFEST, {})

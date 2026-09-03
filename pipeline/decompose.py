@@ -311,7 +311,7 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
             repair_patch_list(patch_tasks, manifest_rows)
             collapse_duplicate_adds(patch_tasks, manifest_rows, parent_specs)
             validate_patch_list(patch_tasks, ids)
-            validate_patch_specs(patch_tasks)
+            validate_patch_specs(patch_tasks, manifest_rows, parent_specs)
             check_patch_grounding(patch_tasks, manifest_rows, instruction)
             return patch_tasks
         except (ValueError, KeyError, TypeError, AttributeError) as e:

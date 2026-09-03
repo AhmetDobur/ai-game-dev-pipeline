@@ -23,6 +23,11 @@ DEFAULTS: dict = {
         # q8 KV cache: 32k ctx costs 8.6GB at fp16 but 4.3GB at q8 — the 32B coder
         # (19.5GB weights) only fits 24GB VRAM with this on
         "coder_extra_args": ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
+        # same for the router: 28 layers x 4 KV heads x 128 dim = 56 KiB/token at
+        # f16, so its 131072-token context alone is 7.00 GiB of KV. q8_0 halves
+        # that to 3.72 GiB, which is what lets the router load on the GPU while
+        # ComfyUI still holds a model
+        "router_extra_args": ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
         "temperature": 0.6,
         "max_tokens": 4096,
         "load_timeout_s": 300,               # big GGUF from HDD can be slow
