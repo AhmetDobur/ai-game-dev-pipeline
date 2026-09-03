@@ -82,17 +82,41 @@ def test_design_3d_with_only_ref_image_validates():
     validate_task_list(tasks)        # ref_image alone satisfies image conditioning
 
 
-def test_world_tscn_environment_and_props():
+def test_world_tscn_builds_an_enclosed_hall():
+    """The room is authored geometry: TRELLIS cannot make a space you stand in,
+    so a walkable interior has to exist before any generated prop is placed."""
     scene = _world_tscn("res://scripts/player.gd", "res://assets/c/character.glb",
                         ["res://assets/e/shelf.glb"])
     assert "volumetric_fog_enabled = true" in scene
-    assert scene.count('type="OmniLight3D"') == 5           # candle ring
-    # every prop instance is wrapped in a StaticBody3D with a collision shape:
-    # 4 placements of the one env glb, plus the floor body
-    assert scene.count('type="StaticBody3D"') == 5
-    assert scene.count('shape = SubResource("prop_shape")') == 4
-    assert scene.count("instance=ExtResource") == 5         # 4 props + player mesh
+    # four walls, a ceiling and a floor -- without these the player walked on an
+    # unbounded plane, which is what "a white floor and nothing else" was
+    for part in ("WallL", "WallR", "WallBack", "WallFront", "Ceiling", "Floor"):
+        assert f'name="{part}"' in scene, part
+    assert scene.count('type="CylinderMesh"') == 12         # colonnade, both sides
+    assert 'name="RoseWindow"' in scene and "emission_enabled = true" in scene
+    assert 'name="Apse"' in scene and 'name="Step2"' in scene
     assert "character.glb" in scene
+    # no unbounded ground plane left behind
+    assert "400, 1, 400" not in scene
+
+
+def test_world_tscn_props_line_the_walls_not_a_ring():
+    scene = _world_tscn(None, None, ["res://assets/e/shelf.glb"])
+    assert scene.count("instance=ExtResource") == 3         # 3 placements, no player mesh
+    assert scene.count('shape = SubResource("prop_shape")') == 3
+    from pipeline.scaffold import _wall_props, HALL_W
+    for _, x, _z, _yaw in _wall_props(["a"]):
+        assert abs(abs(x) - (HALL_W / 2 - 4.2)) < 0.01      # against a side wall
+
+
+def test_hall_palette_follows_the_environment_reference(tmp_path):
+    """Room materials are read off the run's reference, not hardcoded."""
+    from PIL import Image
+    ref = tmp_path / "lib_env.png"
+    Image.new("RGB", (64, 64), (20, 90, 160)).save(ref)     # strongly blue
+    scene = _world_tscn(None, None, [], str(ref))
+    assert "Color(0.078, 0.353, 0.627" in scene, [
+        l for l in scene.splitlines() if "albedo_color" in l]
 
 
 def test_prop_concept_isolated_from_scene_ref():

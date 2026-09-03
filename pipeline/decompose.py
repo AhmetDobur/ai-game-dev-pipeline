@@ -132,6 +132,34 @@ _QUALITY_TAIL = ("dark fantasy video game character concept art, heroic "
                  "physically based materials, sharp focus")
 
 
+def _drop_unused_concepts(tasks: list) -> None:
+    """Remove concept art that a referenced mesh will never look at."""
+    by_id = {x.get("id"): x for x in tasks if isinstance(x, dict)}
+    for t in list(tasks):
+        if not (isinstance(t, dict) and t.get("type") == "design_3d"
+                and t["spec"].get("ref_image")):
+            continue
+        cid = t["spec"].get("concept_from")
+        concept = by_id.get(cid)
+        if not (isinstance(concept, dict) and concept.get("type") == "design_2d"):
+            continue
+        # keep it if anything OTHER than this mesh still needs it. "assemble"
+        # never counts: a later repair makes it depend on every task in the
+        # graph, so it would veto every drop.
+        others = [o for o in tasks if isinstance(o, dict) and o is not t
+                  and o.get("type") != "assemble"
+                  and (o.get("spec", {}).get("concept_from") == cid
+                       or cid in (o.get("depends_on") or []))]
+        if others:
+            continue
+        t["spec"].pop("concept_from", None)
+        t["depends_on"] = [d for d in (t.get("depends_on") or []) if d != cid]
+        tasks.remove(concept)
+        for o in tasks:
+            if isinstance(o, dict):
+                o["depends_on"] = [d for d in (o.get("depends_on") or []) if d != cid]
+
+
 def _apply_style(tasks, instruction: str) -> None:
     """Append the run's art direction to every design_2d prompt.
 
@@ -405,6 +433,12 @@ def repair_task_list(tasks, reference_images: list[str] | None = None,
             if missing:
                 c["spec"]["prompt"] = (p.rstrip().rstrip(",") + ", "
                                        + ", ".join(missing))
+    # A design_3d with a ref_image NEVER opens its concept art: executors.design_3d
+    # takes the cropped reference and returns before touching concept_from. So the
+    # concept task is pure waste -- SDXL time spent on an image nothing consumes,
+    # and a drawer full of bad regenerations of a character the user already drew.
+    # Drop it, unless something else in the graph still depends on it.
+    _drop_unused_concepts(tasks)
     # style goes on LAST so every design_2d prompt ends with the same tail, no
     # matter which earlier repair added words to it
     _apply_style(tasks, instruction)
