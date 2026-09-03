@@ -68,6 +68,7 @@ def import_mesh(path):
     obj.location.y -= (max(v.y for v in bb) + min(v.y for v in bb)) / 2
     obj.location.z -= min(v.z for v in bb)
     bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
+    bpy.context.view_layer.update()  # refresh matrix_world before rigging reads it
     return obj
 
 
@@ -233,11 +234,21 @@ def retarget_onto(arm, bvh_path):
                 # matrix_basis captures the source's local pose whatever its rot mode
                 tb.rotation_quaternion = src.pose.bones[sname].matrix_basis.to_quaternion()
                 tb.keyframe_insert("rotation_quaternion", frame=f)
+                if f == f0:
+                    # rotation_mode is unkeyed DNA: a later procedural clip flips
+                    # it to XYZ and this clip would replay wrong. Key it per clip.
+                    tb.keyframe_insert("rotation_mode", frame=f)
         bpy.ops.object.mode_set(mode="OBJECT")
         print(f"[motion] retargeted {len(pairs)} bone(s) from mocap")
         return len(pairs)
     finally:
+        src_act = src.animation_data.action if src.animation_data else None
         bpy.data.objects.remove(src, do_unlink=True)
+        if src_act and src_act.users == 0:
+            # the orphaned BVH action is often named exactly like the clip (file
+            # stem) — left around, our renamed action becomes "walk.001" and the
+            # exported animation name breaks the player's has_animation lookup
+            bpy.data.actions.remove(src_act)
 
 
 def procedural_clip(arm, clip):
@@ -260,6 +271,10 @@ def procedural_clip(arm, clip):
             elif "spine" in name or "pelvis" in name:
                 pb.rotation_euler = (0, 0, amp * 0.3 * math.sin(phase))
             pb.keyframe_insert("rotation_euler", frame=f)
+            if f == 0:
+                # keyed per clip: a retargeted sibling clip sets QUATERNION and
+                # this clip's euler keys would be ignored on replay
+                pb.keyframe_insert("rotation_mode", frame=f)
     bpy.ops.object.mode_set(mode="OBJECT")
     print(f"[motion] {clip}: procedural cycle")
 

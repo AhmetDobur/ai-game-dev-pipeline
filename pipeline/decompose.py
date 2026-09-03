@@ -181,12 +181,12 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                      if isinstance(x, dict) and x.get("type") == "assemble"}
         if t.get("type") in ("design_2d", "design_3d"):
             _repair_ref_image(t["spec"], reference_images or [])
-        if (t.get("type") == "design_3d" and not t["spec"].get("concept_from")
-                and not t["spec"].get("ref_image")):
-            # the 3D stage is image-conditioned; auto-link the design_2d this
-            # task already depends on rather than reject the plan
+        if t.get("type") == "design_3d" and not t["spec"].get("concept_from"):
+            # the 3D stage is image-conditioned; auto-link the design_2d this task
+            # already depends on. Done even when ref_image is set: the ref takes
+            # precedence at execution, the concept is the fallback if it vanishes.
             by_id = {x.get("id"): x for x in tasks if isinstance(x, dict)}
-            for d in deps:
+            for d in sorted(deps):  # sets iterate nondeterministically
                 if by_id.get(d, {}).get("type") == "design_2d":
                     t["spec"]["concept_from"] = d
                     break
@@ -194,10 +194,14 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
             fd = t["spec"].get("frame_data")
             # frame_data is ONLY the combat-timing contract; routers stuff generic
             # config in it (lighting, camera...) which would trigger the combat-sim
-            # grader on an unrelated task
-            if isinstance(fd, dict) and fd and not all(
-                    isinstance(v, dict) and "startup" in v for v in fd.values()):
-                del t["spec"]["frame_data"]
+            # grader on an unrelated task. Strip junk KEYS, keep real move entries.
+            if isinstance(fd, dict):
+                moves = {k: v for k, v in fd.items()
+                         if isinstance(v, dict) and "startup" in v}
+                if moves:
+                    t["spec"]["frame_data"] = moves
+                else:
+                    del t["spec"]["frame_data"]
             if not t["spec"].get("file"):
                 # a consistent invented path beats a rejected plan; the coder
                 # writes whatever file it is told to
@@ -205,16 +209,21 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                 t["spec"]["file"] = f"scripts/{slug}.gd"
         t["depends_on"] = sorted(deps)
     # non-ASCII ids (a Qwen router drifts into Chinese) slug to the same file —
-    # de-collide deterministically
-    seen: dict[str, int] = {}
-    for t in tasks:
-        if isinstance(t, dict) and t.get("type") == "code":
-            f = t["spec"]["file"]
-            n = seen.get(f, 0)
-            seen[f] = n + 1
-            if n:
-                stem, dot, ext = f.rpartition(".")
-                t["spec"]["file"] = f"{stem}_{n}{dot}{ext}" if dot else f"{f}_{n}"
+    # de-collide deterministically. frame_data tasks claim their name FIRST: the
+    # combat grader hard-loads res://scripts/combat_sim.gd, so the graded task
+    # must never be the one renamed away from it.
+    code_tasks = [t for t in tasks if isinstance(t, dict) and t.get("type") == "code"]
+    seen: set[str] = set()
+    for t in sorted(code_tasks, key=lambda t: not t["spec"].get("frame_data")):
+        f = t["spec"]["file"]
+        n = 0
+        new = f
+        while new in seen:
+            n += 1
+            stem, dot, ext = f.rpartition(".")
+            new = f"{stem}_{n}{dot}{ext}" if dot else f"{f}_{n}"
+        t["spec"]["file"] = new
+        seen.add(new)
 
 
 def validate_task_list(tasks) -> None:

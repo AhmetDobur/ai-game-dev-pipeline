@@ -92,23 +92,25 @@ def _xy_cut(mask, x0: int, y0: int, x1: int, y1: int, depth: int = 4) -> list:
     row = [sum(mask[y][x] for x in range(x0, x1)) for y in range(y0, y1)]
 
     def widest_gap(profile, span):
+        """Widest INTERIOR low-density run. Border runs (outer margins) are not
+        separators and must be skipped, not allowed to veto a real interior gap."""
         limit = max(1, int(0.02 * span))
         best, cur_start, i0, i1 = 0, None, 0, 0
         for i, v in enumerate(profile + [limit + 1]):
-            if v <= limit:
+            if v <= limit and i < len(profile):
                 if cur_start is None:
                     cur_start = i
             elif cur_start is not None:
-                if i - cur_start > best:
+                interior = cur_start > 0 and i < len(profile)
+                if interior and i - cur_start > best:
                     best, i0, i1 = i - cur_start, cur_start, i
                 cur_start = None
         return best, i0, i1
 
     cg, cs, ce = widest_gap(col, y1 - y0)
     rg, rs, re_ = widest_gap(row, x1 - x0)
-    # a real separator is interior and at least 3px wide
-    cut_col = cg >= 3 and 0 < cs and ce < (x1 - x0)
-    cut_row = rg >= 3 and 0 < rs and re_ < (y1 - y0)
+    cut_col = cg >= 3   # widest_gap only ever returns interior runs
+    cut_row = rg >= 3
     if cut_col and (cg >= rg or not cut_row):
         mid = x0 + (cs + ce) // 2
         return (_xy_cut(mask, x0, y0, mid, y1, depth - 1)
@@ -125,7 +127,7 @@ def crop_main_subject(src: Path, dst: Path) -> Path:
     the original image whenever analysis is inconclusive — never blocks a run."""
     try:
         img = Image.open(src).convert("RGB")
-    except OSError:
+    except Exception:  # OSError, DecompressionBombError, ... — never block a run
         return src
     w, h = img.size
     scale = max(w, h) / _SCALE

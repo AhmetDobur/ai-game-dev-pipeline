@@ -147,14 +147,25 @@ def build_executors(cfg: dict, workspace: Path,
         path.write_text(_extract_block(reply), encoding="utf-8")
         return [path, *produced]
 
+    def _ref_file(task: dict) -> Path | None:
+        """The task's reference image as an existing file, or None (a ref can be
+        mangled by the router or deleted between planning and execution — runs
+        span hours and resumes span days)."""
+        ref = task["spec"].get("ref_image", "")
+        if ref and Path(ref).is_file():
+            return Path(ref)
+        if ref:
+            print(f"[design] ref_image {ref!r} not found — falling back", flush=True)
+        return None
+
     def design_2d(task: dict, out_dir: Path) -> list[Path]:
         # a reference image switches to img2img so the user's art guides
         # composition and palette instead of being ignored
-        ref = task["spec"].get("ref_image", "")
-        if ref and Path(ref).is_file():
+        ref = _ref_file(task)
+        if ref:
             return comfy.run_workflow(cfg["comfy"]["sdxl_img2img_workflow"],
                                       {"prompt": task["spec"]["prompt"],
-                                       "image": ref}, out_dir)
+                                       "image": str(ref)}, out_dir)
         return comfy.run_workflow(cfg["comfy"]["sdxl_workflow"],
                                   {"prompt": task["spec"]["prompt"]}, out_dir)
 
@@ -162,12 +173,17 @@ def build_executors(cfg: dict, workspace: Path,
         # image precedence: a user reference (cropped to its main figure, since
         # TRELLIS rebuilds everything in frame) beats the generated concept art
         subs = {"prompt": task["spec"].get("prompt", "")}
-        ref = task["spec"].get("ref_image", "")
-        if ref and Path(ref).is_file():
+        ref = _ref_file(task)
+        if ref:
             from .refimage import crop_main_subject
-            subs["image"] = str(crop_main_subject(Path(ref), out_dir / "ref_crop.png"))
+            subs["image"] = str(crop_main_subject(ref, out_dir / "ref_crop.png"))
         elif task["spec"].get("concept_from"):
             subs["image"] = str(_resolve_dep(task, task["spec"]["concept_from"]))
+        else:
+            # fail with the actual cause, not ComfyUI's cryptic rejection of a
+            # workflow whose {{image}} placeholder was never substituted
+            raise ValueError("design_3d has no usable image: ref_image missing "
+                             "from disk and no concept_from linked")
         outputs = comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir)
         for p in outputs:
             if p.suffix.lower() in (".glb", ".gltf"):

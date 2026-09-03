@@ -46,7 +46,10 @@ world.node_tree.nodes["Background"].inputs[0].default_value = (0.2, 0.2, 0.22, 1
 bpy.context.scene.world = world
 
 sc = bpy.context.scene
-sc.render.engine = "BLENDER_EEVEE_NEXT" if hasattr(bpy.types, "SceneEEVEE") else "BLENDER_EEVEE"
+try:
+    sc.render.engine = "BLENDER_EEVEE_NEXT"   # Blender 4.2+
+except TypeError:
+    sc.render.engine = "BLENDER_EEVEE"        # older Blender
 sc.render.resolution_x = sc.render.resolution_y = 512
 sc.render.filepath = out_png
 bpy.ops.render.render(write_still=True)
