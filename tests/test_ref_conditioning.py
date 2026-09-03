@@ -467,3 +467,12 @@ def test_players_face_the_apse():
     scene = _world_tscn("res://scripts/player.gd", ["res://a/character.glb"], [])
     assert f"Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0.0, 1.2, {SPAWN_Z})" in scene
     assert "position = Vector3(0.0, 1.2," not in scene   # no unrotated spawn left
+
+
+def test_character_mesh_is_turned_to_face_forward():
+    """A TRELLIS mesh looks down its own +Z; a Godot body walks along -Z. Without
+    the flip the character moonwalks, facing its own camera."""
+    from pipeline.scaffold import _world_tscn
+    scene = _world_tscn(None, ["res://a/character.glb"], [])
+    mesh = scene.split('[node name="Mesh"')[1]
+    assert "Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 0)" in mesh.split("[node")[0]

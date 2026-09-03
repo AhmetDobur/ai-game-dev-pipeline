@@ -216,7 +216,12 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
         mesh = ""
         if i < len(char_glbs):
             mid = ext_res("PackedScene", char_glbs[i])
-            mesh = f'\n[node name="Mesh" parent="{name}" instance=ExtResource("{mid}")]'
+            # yaw 180: TRELLIS reconstructs a front-view reference so the model
+            # looks down its own +Z, while a Godot body moves along -Z. Left
+            # unrotated the character walks backwards, facing its own camera.
+            mesh = (f'\n[node name="Mesh" parent="{name}" '
+                    f'instance=ExtResource("{mid}")]\n'
+                    'transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 0)')
         # CamPivot is emitted BEFORE the mesh instance on purpose: a .glb that
         # fails to load raises a parse error that drops every node after it in
         # the file, and losing the pivot means the player cannot look or aim.
