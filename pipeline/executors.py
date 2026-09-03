@@ -24,6 +24,29 @@ no arguments), Spatial->Node3D, onready var->@onready var, export->@export,
 yield->await, .instance()->.instantiate(), OS.get_ticks_msec()->Time.get_ticks_msec(),
 rand_range(a,b)->randf_range(a,b), Input singleton constants unchanged.
 
+Reference — a CORRECT Godot 4 third-person controller (copy these idioms exactly:
+velocity is inherited, never redeclared; mouse look uses _unhandled_input, there
+is no Input.get_mouse_delta):
+
+    extends CharacterBody3D
+    @export var speed := 4.0
+    @export var run_speed := 8.0
+    @onready var cam_pivot: Node3D = $CamPivot
+    func _unhandled_input(event: InputEvent) -> void:
+        if event is InputEventMouseMotion:
+            rotate_y(-event.relative.x * 0.003)
+            cam_pivot.rotate_x(-event.relative.y * 0.003)
+            cam_pivot.rotation.x = clampf(cam_pivot.rotation.x, -1.2, 1.2)
+    func _physics_process(delta: float) -> void:
+        var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+        var dir := (transform.basis * Vector3(input.x, 0, input.y)).normalized()
+        var s := run_speed if Input.is_key_pressed(KEY_SHIFT) else speed
+        velocity.x = dir.x * s
+        velocity.z = dir.z * s
+        if not is_on_floor():
+            velocity.y -= 20.0 * delta
+        move_and_slide()
+
 {frame_data_note}{fix_note}Reply with ONLY the file content in a single fenced code block."""
 
 # The CombatSim contract lets the pipeline grade timing with its own static
