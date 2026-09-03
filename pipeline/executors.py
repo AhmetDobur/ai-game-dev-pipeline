@@ -176,8 +176,9 @@ def build_executors(cfg: dict, workspace: Path,
         dist.mkdir(parents=True, exist_ok=True)
         preset = task["spec"].get("export_preset", "Windows Desktop")
         target = dist / ("game.exe" if "windows" in preset.lower() else "game.zip")
+        # godot resolves a relative export path against the project, not our cwd
         r = subprocess.run([godot, "--headless", "--path", str(game_dir),
-                            "--export-release", preset, str(target)],
+                            "--export-release", preset, str(target.resolve())],
                            capture_output=True, encoding="utf-8", errors="replace",
                            timeout=1800)
         if r.returncode == 0 and target.exists():
