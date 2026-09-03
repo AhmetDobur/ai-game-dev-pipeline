@@ -695,14 +695,14 @@ def test_flat_plane_is_reported_from_the_glb(tmp_path):
 
 def _rows_with_specs():
     return [
-        {"id": "349e-hero_art", "type": "design_2d", "summary": "a knight",
+        {"id": "349edb5bf375-hero_art", "type": "design_2d", "summary": "a knight",
          "observed": "1024x1024 image", "spec": {"prompt": "a knight, solo"}},
-        {"id": "349e-hero_mesh", "type": "design_3d", "summary": "knight mesh",
+        {"id": "349edb5bf375-hero_mesh", "type": "design_3d", "summary": "knight mesh",
          "observed": "size 0.5x1.0x0.3",
-         "spec": {"prompt": "knight mesh", "concept_from": "349e-hero_art"}},
-        {"id": "349e-hero_anim", "type": "rig_animate", "summary": "idle,walk,run",
+         "spec": {"prompt": "knight mesh", "concept_from": "349edb5bf375-hero_art"}},
+        {"id": "349edb5bf375-hero_anim", "type": "rig_animate", "summary": "idle,walk,run",
          "observed": "NOT SKINNED: the mesh is not bound to the skeleton",
-         "spec": {"mesh_from": "349e-hero_mesh", "body_plan": "humanoid",
+         "spec": {"mesh_from": "349edb5bf375-hero_mesh", "body_plan": "humanoid",
                   "animations": ["idle", "walk", "run"], "extras": []}},
     ]
 
@@ -714,8 +714,8 @@ def test_bare_ids_are_repaired_not_rejected():
     ops = [{"id": "hero_skinning", "type": "rig_animate",
             "depends_on": ["hero_mesh"], "spec": {"mesh_from": "hero_mesh"}}]
     repair_patch_list(ops, _rows_with_specs())
-    assert ops[0]["depends_on"] == ["349e-hero_mesh"]
-    assert ops[0]["spec"]["mesh_from"] == "349e-hero_mesh"
+    assert ops[0]["depends_on"] == ["349edb5bf375-hero_mesh"]
+    assert ops[0]["spec"]["mesh_from"] == "349edb5bf375-hero_mesh"
 
 
 def test_ambiguous_bare_id_is_left_for_the_validator():
@@ -734,11 +734,11 @@ def test_duplicate_add_becomes_a_modify():
     rows = _rows_with_specs()
     specs = {r["id"]: r["spec"] for r in rows}
     ops = [{"id": "hero_skinning", "type": "rig_animate",
-            "depends_on": ["349e-hero_mesh"],
-            "spec": {"mesh_from": "349e-hero_mesh", "animations": ["idle", "walk", "run"]}}]
+            "depends_on": ["349edb5bf375-hero_mesh"],
+            "spec": {"mesh_from": "349edb5bf375-hero_mesh", "animations": ["idle", "walk", "run"]}}]
     collapse_duplicate_adds(ops, rows, specs)
-    assert ops[0] == {"target": "349e-hero_anim",
-                      "spec": {"mesh_from": "349e-hero_mesh", "body_plan": "humanoid",
+    assert ops[0] == {"target": "349edb5bf375-hero_anim",
+                      "spec": {"mesh_from": "349edb5bf375-hero_mesh", "body_plan": "humanoid",
                                "animations": ["idle", "walk", "run"], "extras": []}}
 
 
@@ -763,10 +763,10 @@ def test_router_sees_short_ids_and_either_form_is_accepted():
     assert short_id("hero_anim") == "hero_anim"          # already short
     assert short_id("notarunid1234-x") == "notarunid1234-x"   # not 12 hex
     rows = _rows_with_specs()
-    for written in ("hero_mesh", "349e-hero_mesh"):
+    for written in ("hero_mesh", "349edb5bf375-hero_mesh"):
         ops = [{"target": written, "spec": {}}]
         repair_patch_list(ops, rows)
-        assert ops[0]["target"] == "349e-hero_mesh", written
+        assert ops[0]["target"] == "349edb5bf375-hero_mesh", written
 
 
 def test_single_candidate_grounding_hands_over_the_exact_reply():
@@ -776,7 +776,7 @@ def test_single_candidate_grounding_hands_over_the_exact_reply():
     from pipeline.patch import check_patch_grounding
     rows = _rows_with_specs()
     try:
-        check_patch_grounding([{"target": "349e-hero_art", "spec": {"prompt": "x"}}],
+        check_patch_grounding([{"target": "349edb5bf375-hero_art", "spec": {"prompt": "x"}}],
                               rows, "make the animation more realistic")
         raise AssertionError("wrong-target patch accepted")
     except ValueError as e:
@@ -785,5 +785,5 @@ def test_single_candidate_grounding_hands_over_the_exact_reply():
         assert "NOT SKINNED" in msg                    # the measured reason
         # the handed-over spec must be the real current one, valid to send back
         payload = _json.loads(msg[msg.index("[{"):msg.index("}]") + 2])
-        assert payload[0]["spec"]["mesh_from"] == "349e-hero_mesh"
+        assert payload[0]["spec"]["mesh_from"] == "349edb5bf375-hero_mesh"
         assert payload[0]["spec"]["body_plan"] == "humanoid"
