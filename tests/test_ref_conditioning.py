@@ -209,3 +209,64 @@ def test_rig_on_art_retargeted_through_synthesized_mesh():
     assert "char_art_mesh" in by["anim"]["depends_on"]
     assert "frame_data" not in by["player"]["spec"]
     validate_task_list(tasks)
+
+
+def test_style_tail_is_identical_across_sibling_props():
+    """Sibling props must end with a byte-identical style tail. The seed and the
+    negative prompt are already shared, so this is what makes them converge."""
+    from pipeline.decompose import repair_task_list, _QUALITY_TAIL
+    tasks = [
+        {"id": "shelf_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a bookshelf"}},
+        {"id": "shelf", "type": "design_3d", "depends_on": ["shelf_art"],
+         "spec": {"prompt": "bookshelf", "concept_from": "shelf_art"}},
+        # a router that copied the few-shot already says "isolated" -- this task
+        # used to skip the whole suffix append and diverge from its sibling
+        {"id": "globe_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a globe, single isolated object"}},
+        {"id": "globe", "type": "design_3d", "depends_on": ["globe_art"],
+         "spec": {"prompt": "globe", "concept_from": "globe_art"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks, [], "Make a game.\nStyle: dark baroque oil painting\n")
+    from pipeline.decompose import _ISO_CLAUSES
+    for t in tasks:
+        if t["type"] != "design_2d":
+            continue
+        p = t["spec"]["prompt"]
+        assert p.endswith(f"dark baroque oil painting, {_QUALITY_TAIL}"), p
+        assert "product render" not in p, p
+        # every mesh-feeding concept carries all three isolation clauses, once
+        for cl in _ISO_CLAUSES:
+            assert p.lower().count(cl) == 1, (cl, p)
+
+
+def test_quality_tail_applies_without_a_style_line():
+    from pipeline.decompose import repair_task_list, _QUALITY_TAIL
+    tasks = [{"id": "a", "type": "design_2d", "depends_on": [],
+              "spec": {"prompt": "a crate"}},
+             {"id": "build", "type": "assemble", "depends_on": [], "spec": {}}]
+    repair_task_list(tasks, [], "no style line here")
+    # a lone prop design_2d gets a synthesized mesh, hence the isolation clauses
+    assert tasks[0]["spec"]["prompt"].endswith(_QUALITY_TAIL)
+    assert tasks[0]["spec"]["prompt"].startswith("a crate,")
+
+
+def test_char_ref_survives_a_prop_mesh_holding_its_own_ref():
+    """A prop mesh with a ref_image used to starve every character mesh."""
+    from pipeline.decompose import repair_task_list
+    tasks = [
+        {"id": "hero_mesh", "type": "design_3d", "depends_on": [],
+         "spec": {"prompt": "the hero", "concept_from": "hero_art"}},
+        {"id": "hero_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "the hero"}},
+        {"id": "hero_anim", "type": "rig_animate", "depends_on": ["hero_mesh"],
+         "spec": {"mesh_from": "hero_mesh", "body_plan": "humanoid",
+                  "animations": ["idle"], "extras": []}},
+        {"id": "prop", "type": "design_3d", "depends_on": [],
+         "spec": {"prompt": "a lamp", "ref_image": "inbox/lamp_env.png"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks, ["inbox/sheet_char.png", "inbox/lamp_env.png"], "")
+    hero = next(t for t in tasks if t["id"] == "hero_mesh")
+    assert hero["spec"]["ref_image"] == "inbox/sheet_char.png"

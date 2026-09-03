@@ -148,16 +148,20 @@ height = 1.8
 background_mode = 1
 background_color = Color(0.02, 0.015, 0.01, 1)
 ambient_light_source = 2
-ambient_light_color = Color(0.45, 0.36, 0.26, 1)
-ambient_light_energy = 0.6
+; near-neutral, low energy: a saturated ambient tint multiplies into EVERY
+; material and re-colours generated textures on their way to the screen, which
+; hides whatever the art stage actually produced. Mood belongs to the lights
+; (the candles below), not to a global wash over every asset.
+ambient_light_color = Color(0.30, 0.29, 0.28, 1)
+ambient_light_energy = 0.25
 tonemap_mode = 3
 glow_enabled = true
 glow_intensity = 0.6
 glow_bloom = 0.15
 volumetric_fog_enabled = true
-volumetric_fog_density = 0.02
-volumetric_fog_albedo = Color(0.85, 0.68, 0.45, 1)
-volumetric_fog_emission = Color(0.06, 0.045, 0.025, 1)
+volumetric_fog_density = 0.008
+volumetric_fog_albedo = Color(0.55, 0.50, 0.45, 1)
+volumetric_fog_emission = Color(0.04, 0.032, 0.022, 1)
 
 [node name="World" type="Node3D"]
 

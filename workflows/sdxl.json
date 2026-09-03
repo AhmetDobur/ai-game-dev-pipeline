@@ -53,7 +53,7 @@
   "7": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "blurry, low quality, watermark, text, background scenery, archway, doorway, frame, border, multiple people, two figures",
+      "text": "blurry, low quality, watermark, text, multiple people, two figures, cartoon, cel shaded, flat colors, toy, plastic, airbrushed, oversmoothed, simplistic, low detail",
       "clip": [
         "4",
         1

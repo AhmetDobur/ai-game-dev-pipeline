@@ -93,6 +93,37 @@ _THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
 _SCENE_WORDS = ("hall", "room", "interior", "environment", "scene",
                 "landscape", "backdrop", "mural", "skybox", "vista", "level")
 
+# An optional "Style: ..." line in instruction.md is the run's art direction. It
+# is appended VERBATIM and UNCONDITIONALLY to every design_2d prompt, which is
+# what makes sibling props converge: the seed and negative prompt are already
+# shared, so with a byte-identical style tail the only thing left differing
+# between two props is the subject phrase itself.
+_STYLE_RE = re.compile(r"^[ \t]*style[ \t]*:[ \t]*(.+?)[ \t]*$", re.I | re.M)
+
+# Every concept that feeds TRELLIS needs all three of these, exactly once.
+_ISO_CLAUSES = ("single isolated object", "centered", "plain white background")
+
+# Applied even when the instruction names no style. These are art-direction
+# NEUTRAL (they commit to no genre or palette) but they contradict the smooth,
+# even, low-micro-contrast prior that a bare subject phrase falls into.
+# ponytail: text-level style lock. Upgrade path is IP-Adapter conditioning in
+# sdxl.json if props still diverge in palette after this ships.
+_QUALITY_TAIL = ("highly detailed, intricate surface detail, physically based "
+                 "materials, dramatic directional lighting, painterly")
+
+
+def _apply_style(tasks, instruction: str) -> None:
+    """Append the run's art direction to every design_2d prompt."""
+    m = _STYLE_RE.search(instruction or "")
+    tail = f"{m.group(1).rstrip('.')}, {_QUALITY_TAIL}" if m else _QUALITY_TAIL
+    for t in tasks:
+        if not (isinstance(t, dict) and t.get("type") == "design_2d"):
+            continue
+        p = (t.get("spec", {}).get("prompt") or "").rstrip().rstrip(",")
+        # unconditional: a gate here is how two props in one run end up with
+        # different style tails, which is the divergence this is meant to remove
+        t["spec"]["prompt"] = f"{p}, {tail}" if p else tail
+
 
 def _coerce_task_list(parsed):
     """R1-style routers wrap the array ({"tasks": [...]}), emit one bare task,
@@ -125,7 +156,7 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
         reply = _THINK_RE.sub("", raw).strip() or raw
         try:
             tasks = _coerce_task_list(extract_json(reply))
-            repair_task_list(tasks, reference_images)
+            repair_task_list(tasks, reference_images, instruction)
             validate_task_list(tasks)
             return tasks
         except (ValueError, KeyError, TypeError, AttributeError) as e:
@@ -191,7 +222,8 @@ def _repair_ref_image(spec: dict, reference_images: list[str]) -> None:
         spec.pop("ref_image", None)
 
 
-def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
+def repair_task_list(tasks, reference_images: list[str] | None = None,
+                     instruction: str = "") -> None:
     """Deterministic fixes for mistakes every small router makes: spec references
     (concept_from/mesh_from) imply dependencies, and assemble depends on everything."""
     if not isinstance(tasks, list):
@@ -298,13 +330,14 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
         return [r for r in refs
                 if any(w in PurePath(r.replace("\\", "/")).name.lower() for w in words)]
     d3 = [t for t in tasks if isinstance(t, dict) and t.get("type") == "design_3d"]
-    if d3 and not any(t["spec"].get("ref_image") for t in d3):
-        char_refs = _named(("char", "hero", "player", "figure", "portrait"))
-        rig_meshes = {t["spec"].get("mesh_from") for t in tasks
-                      if isinstance(t, dict) and t.get("type") == "rig_animate"}
-        for t in d3:
-            if char_refs and t.get("id") in rig_meshes:
-                t["spec"]["ref_image"] = char_refs[0]
+    # per-task, not graph-wide: the old `not any(... for t in d3)` guard meant one
+    # prop mesh carrying a ref_image starved EVERY character mesh of its reference
+    char_refs = _named(("char", "hero", "player", "figure", "portrait"))
+    rig_meshes = {t["spec"].get("mesh_from") for t in tasks
+                  if isinstance(t, dict) and t.get("type") == "rig_animate"}
+    for t in d3:
+        if char_refs and t.get("id") in rig_meshes and not t["spec"].get("ref_image"):
+            t["spec"]["ref_image"] = char_refs[0]
     d2_backdrops = [t for t in tasks if isinstance(t, dict)
                     and t.get("type") == "design_2d" and t.get("id") not in
                     {x["spec"].get("concept_from") for x in d3}]
@@ -324,10 +357,24 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
         c = by_id.get(t.get("spec", {}).get("concept_from"))
         if isinstance(c, dict) and c.get("type") == "design_2d":
             c["spec"].pop("ref_image", None)
+            # "plain white background" is load-bearing: concept art reaches
+            # TRELLIS UNCROPPED (executors.design_3d only crops a ref_image), so
+            # the matte has to come from the render itself. Append per-clause:
+            # a blanket `if "isolated" not in p` gate let a router prompt that
+            # merely said "single isolated object" skip the background clause
+            # too, leaving that one prop with no guaranteed matte.
+            # "product render" used to ride along here and was the pipeline's
+            # only unconditional style instruction to SDXL -- a clean-studio-
+            # catalogue token, applied to characters as well. Removed: the look
+            # now comes from _apply_style, which the operator controls.
             p = c["spec"].get("prompt", "")
-            if "isolated" not in p:
-                c["spec"]["prompt"] = (p + ", single isolated object, centered, "
-                                       "plain white background, product render")
+            missing = [cl for cl in _ISO_CLAUSES if cl not in p.lower()]
+            if missing:
+                c["spec"]["prompt"] = (p.rstrip().rstrip(",") + ", "
+                                       + ", ".join(missing))
+    # style goes on LAST so every design_2d prompt ends with the same tail, no
+    # matter which earlier repair added words to it
+    _apply_style(tasks, instruction)
     # non-ASCII ids (a Qwen router drifts into Chinese) slug to the same file —
     # de-collide deterministically. frame_data tasks claim their name FIRST: the
     # combat grader hard-loads res://scripts/combat_sim.gd, so the graded task
