@@ -39,7 +39,10 @@ def test_structural_rules_and_repair():
         {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
     ]
     repair_task_list(bad)
-    assert set(bad[2]["depends_on"]) == {"char", "rig"}   # assemble deps rebuilt
+    # repair also synthesizes a design_3d for the orphan prop concept "char"
+    assert set(bad[2]["depends_on"]) == {"char", "char_mesh", "rig"}
+    synth = next(t for t in bad if t["id"] == "char_mesh")
+    assert synth["type"] == "design_3d" and synth["spec"]["concept_from"] == "char"
     assert bad[1]["depends_on"] == ["char"]               # mesh_from implies dep
     with pytest.raises(ValueError, match="code"):
         validate_task_list(bad)

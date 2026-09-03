@@ -2,6 +2,7 @@
 task list, which is inserted into the SQLite queue."""
 import json
 import re
+from pathlib import PurePath
 
 from . import db
 from .adapters.llm import LlamaServer, extract_json
@@ -82,6 +83,8 @@ Reply with ONLY a JSON array of tasks."""
 
 
 _THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
+_SCENE_WORDS = ("hall", "room", "interior", "environment", "scene",
+                "landscape", "backdrop", "mural", "skybox", "vista", "level")
 
 
 def _coerce_task_list(parsed):
@@ -172,7 +175,6 @@ def _repair_ref_image(spec: dict, reference_images: list[str]) -> None:
         return
     if ref in reference_images:
         return
-    from pathlib import PurePath
     frag = PurePath(ref.replace("\\", "/")).name.lower()
     hits = [r for r in reference_images
             if frag and frag in PurePath(r.replace("\\", "/")).name.lower()]
@@ -188,11 +190,38 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
     if not isinstance(tasks, list):
         return
     ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    for t in tasks:                 # normalize early: the passes below read spec
+        if isinstance(t, dict) and not isinstance(t.get("spec"), dict):
+            t["spec"] = {}          # routers omit assemble's empty spec constantly
+    # the router regularly forgets that prop concepts exist to BECOME meshes: a
+    # design_2d nothing builds from, whose subject is a thing (not a space),
+    # gets a synthesized design_3d. Spaces stay 2D — TRELLIS cannot build rooms,
+    # so scene-headed prompts ("a vast library hall") are left as backdrop art;
+    # only the head before a location preposition decides ("a bookshelf IN a
+    # library hall" is still a bookshelf).
+    consumed = {t["spec"].get("concept_from") for t in tasks
+                if isinstance(t, dict) and t.get("type") == "design_3d"}
+    synthesized = []
+    for t in tasks:
+        if not (isinstance(t, dict) and t.get("type") == "design_2d"):
+            continue
+        if not t.get("id") or t["id"] in consumed:
+            continue
+        p = str(t["spec"].get("prompt", ""))
+        head = re.split(r"\b(?:in|inside|within|at|among)\b", p.lower())[0]
+        if not p or any(w in head for w in _SCENE_WORDS):
+            continue
+        mid = f"{t['id']}_mesh"
+        if mid in ids:
+            continue
+        synthesized.append({"id": mid, "type": "design_3d", "depends_on": [t["id"]],
+                            "spec": {"prompt": p + ", game-ready prop mesh",
+                                     "concept_from": t["id"]}})
+        ids.add(mid)
+    tasks.extend(synthesized)
     for t in tasks:
         if not isinstance(t, dict):
             continue
-        if not isinstance(t.get("spec"), dict):
-            t["spec"] = {}          # routers omit assemble's empty spec constantly
         deps = set(t.get("depends_on") or [])
         for key in ("concept_from", "mesh_from"):
             v = t["spec"].get(key)
@@ -234,6 +263,29 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                 slug = re.sub(r"[^a-z0-9_]+", "_", str(t.get("id", "task")).lower())
                 t["spec"]["file"] = f"scripts/{slug}.gd"
         t["depends_on"] = sorted(deps)
+    # user references must actually condition something — the router drops them
+    # nondeterministically, and a dropped character ref silently costs identity.
+    # File names carry intent (the drop convention names refs *_char / *_env).
+    refs = reference_images or []
+    def _named(words):
+        return [r for r in refs
+                if any(w in PurePath(r.replace("\\", "/")).name.lower() for w in words)]
+    d3 = [t for t in tasks if isinstance(t, dict) and t.get("type") == "design_3d"]
+    if d3 and not any(t["spec"].get("ref_image") for t in d3):
+        char_refs = _named(("char", "hero", "player", "figure", "portrait"))
+        rig_meshes = {t["spec"].get("mesh_from") for t in tasks
+                      if isinstance(t, dict) and t.get("type") == "rig_animate"}
+        for t in d3:
+            if char_refs and t.get("id") in rig_meshes:
+                t["spec"]["ref_image"] = char_refs[0]
+    d2_backdrops = [t for t in tasks if isinstance(t, dict)
+                    and t.get("type") == "design_2d" and t.get("id") not in
+                    {x["spec"].get("concept_from") for x in d3}]
+    if d2_backdrops and not any(t["spec"].get("ref_image") for t in d2_backdrops):
+        env_refs = _named(("env", "background", "backdrop", "scene"))
+        for t in d2_backdrops:
+            if env_refs:
+                t["spec"]["ref_image"] = env_refs[0]
     # concept art that feeds TRELLIS must be ONE isolated object: img2img from a
     # scene reference forces whole-room composition into the concept, and TRELLIS
     # turns a room image into polygon noise. Style lives in the prompt text; the

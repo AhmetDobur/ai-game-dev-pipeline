@@ -138,3 +138,34 @@ def test_think_block_stripped():
     assert _THINK_RE.sub("", raw).strip() == '[{"id": "a"}]'
     # unterminated think block (token budget ran out) strips to empty
     assert _THINK_RE.sub("", "<think>endless pondering").strip() == ""
+
+
+def test_router_omissions_repaired():
+    # the graph run 755c000b5c86 actually got: no prop design_3ds at all, and
+    # the user refs dropped. Repair must synthesize meshes and re-attach refs.
+    tasks = [
+        {"id": "char_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "an imam brawler, solo"}},
+        {"id": "char_mesh", "type": "design_3d", "depends_on": ["char_art"],
+         "spec": {"prompt": "mesh", "concept_from": "char_art"}},
+        {"id": "anim", "type": "rig_animate", "depends_on": ["char_mesh"],
+         "spec": {"mesh_from": "char_mesh", "body_plan": "humanoid",
+                  "animations": ["idle"]}},
+        {"id": "shelf", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a massive bookshelf in a library hall"}},
+        {"id": "env", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a vast baroque library hall"}},
+        {"id": "player", "type": "code", "depends_on": [],
+         "spec": {"file": "scripts/p.gd", "description": "d"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    refs = ["inbox/started/1-x__x_char.png", "inbox/started/1-x__x_env.png"]
+    repair_task_list(tasks, refs)
+    by = {t["id"]: t for t in tasks}
+    assert by["shelf_mesh"]["spec"]["concept_from"] == "shelf"  # prop mesh synthesized
+    assert "env_mesh" not in by                                 # scene art stays 2D
+    assert by["char_mesh"]["spec"]["ref_image"] == refs[0]      # char ref enforced
+    assert by["env"]["spec"]["ref_image"] == refs[1]            # env ref on backdrop
+    assert "ref_image" not in by["shelf"]["spec"]               # isolation strips it
+    assert "single isolated object" in by["shelf"]["spec"]["prompt"]
+    validate_task_list(tasks)
