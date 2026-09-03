@@ -19,12 +19,24 @@ const GRAVITY := 18.0
 const PITCH_LIMIT := 1.2
 const CAM_OFFSET := Vector3(0, 0.4, 3.5)
 const MOUSE_SENS := 0.0022
+const RUN_SPEED := 8.0
+const RUN_STICK := 0.75        # push the stick past this and the character runs
 
 @onready var _pivot: Node3D = $CamPivot
 @onready var _camera: Camera3D = get_node_or_null(camera_path) as Camera3D
 
+var _anim: AnimationPlayer = null
+var _clip := ""
+
 
 func _ready() -> void:
+	# the rigged character.glb carries idle/walk/run as named animations; without
+	# this the character slides through the hall frozen in its rest pose
+	_anim = find_child("AnimationPlayer", true, false)
+	if _anim:
+		for a in _anim.get_animation_list():
+			_anim.get_animation(a).loop_mode = Animation.LOOP_LINEAR
+
 	# Player 1 is the keyboard+mouse seat. Without this the game is walk-only:
 	# WASD moves but nothing turns, so you can never look at the room you are in.
 	if device == 0:
@@ -51,6 +63,12 @@ func _input(event: InputEvent) -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
+func _play(clip: String) -> void:
+	if _anim and clip != _clip and _anim.has_animation(clip):
+		_anim.play(clip, 0.25)   # cross-fade so walk<->run does not snap
+		_clip = clip
+
+
 func _stick(axis_x: int, axis_y: int) -> Vector2:
 	var v := Vector2(Input.get_joy_axis(device, axis_x),
 			Input.get_joy_axis(device, axis_y))
@@ -68,13 +86,23 @@ func _physics_process(delta: float) -> void:
 	if device == 0 and move == Vector2.ZERO:
 		move = Input.get_vector("move_left", "move_right",
 				"move_forward", "move_back")
+	# run on a hard stick push, or Shift for the keyboard seat
+	var running := move.length() > RUN_STICK \
+			or (device == 0 and Input.is_key_pressed(KEY_SHIFT))
+	var speed := RUN_SPEED if running else SPEED
+
 	var dir := (transform.basis * Vector3(move.x, 0.0, move.y))
 	dir.y = 0.0
 	dir = dir.normalized() if dir.length() > 0.001 else Vector3.ZERO
-	velocity.x = dir.x * SPEED
-	velocity.z = dir.z * SPEED
+	velocity.x = dir.x * speed
+	velocity.z = dir.z * speed
 	velocity.y = 0.0 if is_on_floor() else velocity.y - GRAVITY * delta
 	move_and_slide()
+
+	if dir == Vector3.ZERO:
+		_play("idle")
+	else:
+		_play("run" if running else "walk")
 
 	if _camera:
 		_camera.global_transform = _pivot.global_transform.translated_local(CAM_OFFSET)

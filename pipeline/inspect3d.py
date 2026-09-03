@@ -38,3 +38,34 @@ def verdict(mesh: Path) -> tuple[bool, str]:
                            f"{thin:.1%} of the longest (bbox {bbox}). TRELLIS returned "
                            f"a flat plane, not a solid.")
     return True, "mesh ok"
+
+
+def has_skin(mesh: Path) -> bool | None:
+    """Does this .glb bind its mesh to a skeleton? None when it cannot be read.
+
+    A rigged character with no skin is the pipeline's quietest failure: the glb
+    is the right size, carries JOINTS_0/WEIGHTS_0 and every named clip, and
+    imports without a single error -- but the bones animate nothing and the
+    character slides about frozen in its rest pose. Blender emits exactly this
+    when bone-heat weighting fails on non-manifold geometry.
+    """
+    import json as _json
+    import struct
+    try:
+        d = mesh.read_bytes()
+        if d[:4] != b"glTF":
+            return None            # .gltf/.obj etc -- not our business
+        n = struct.unpack_from("<I", d, 12)[0]
+        doc = _json.loads(d[20:20 + n])
+    except Exception:
+        return None                # unreadable -- never a rejection
+    return bool(doc.get("skins")) and any(
+        "skin" in node for node in doc.get("nodes", []))
+
+
+def rig_verdict(mesh: Path) -> tuple[bool, str]:
+    """Reject an animated model whose mesh is not bound to its skeleton."""
+    if has_skin(mesh) is False:
+        return False, (f"{mesh.name}: rigged model has no skin -- the mesh is not "
+                       "bound to its skeleton, so every clip animates nothing")
+    return True, ""

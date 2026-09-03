@@ -152,7 +152,56 @@ def procedural_rig(mesh_obj, body_plan):
     mesh_obj.select_set(True); arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+    if not weight_total(mesh_obj):
+        # Bone heat needs clean manifold geometry and TRELLIS output is neither.
+        # It fails with "failed to find solution for one or more bones", still
+        # creates the vertex groups, and leaves EVERY vertex at zero weight --
+        # on the reference character, 0 of 36994. The glb then exports with
+        # JOINTS_0/WEIGHTS_0 but no skin at all, so Godot imports a static mesh
+        # and the character slides through the level frozen in its rest pose.
+        print("[motion] bone heat produced no weights — binding by distance")
+        bind_by_distance(mesh_obj, arm)
     return arm
+
+
+def weight_total(mesh_obj):
+    """Sum of every vertex-group weight. Zero means nothing is actually bound,
+    however many groups exist."""
+    return sum(g.weight for v in mesh_obj.data.vertices for g in v.groups)
+
+
+def bind_by_distance(mesh_obj, arm, blend=2):
+    """Weight each vertex to its `blend` nearest bone segments, inverse-square.
+
+    Purely geometric, so unlike bone heat it cannot fail on self-intersecting or
+    non-manifold meshes -- which is every mesh this pipeline generates. Quality is
+    below a solved heat map, but a crude bind that animates beats a perfect one
+    that does not exist.
+    """
+    from mathutils import Vector
+
+    to_local = mesh_obj.matrix_world.inverted() @ arm.matrix_world
+    bones = [(b.name, to_local @ b.head_local, to_local @ b.tail_local)
+             for b in arm.data.bones if b.use_deform]
+    if not bones:
+        return
+    groups = {name: (mesh_obj.vertex_groups.get(name)
+                     or mesh_obj.vertex_groups.new(name=name))
+              for name, _h, _t in bones}
+
+    def seg_dist(p, a, b):
+        ab = b - a
+        d2 = ab.length_squared
+        t = 0.0 if d2 == 0.0 else max(0.0, min(1.0, (p - a).dot(ab) / d2))
+        return (p - (a + ab * t)).length
+
+    for v in mesh_obj.data.vertices:
+        near = sorted(((seg_dist(v.co, h, t), name) for name, h, t in bones))[:blend]
+        # +1e-4 keeps a vertex sitting exactly on a bone from dividing by zero
+        raw = [(1.0 / (d + 1e-4) ** 2, name) for d, name in near]
+        total = sum(w for w, _ in raw) or 1.0
+        for w, name in raw:
+            groups[name].add([v.index], w / total, "REPLACE")
 
 
 # --- animation -------------------------------------------------------------

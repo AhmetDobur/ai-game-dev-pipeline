@@ -22,11 +22,17 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
         return _validate_files(output_paths, IMAGE_EXTS, MIN_IMAGE_BYTES, "image")
     if kind == "design_3d":
         ok, detail = _validate_files(output_paths, MESH_EXTS, MIN_MESH_BYTES, "mesh")
-        return (ok, detail) if not ok else _validate_geometry(output_paths)
+        if not ok:
+            return ok, detail
+        ok, detail = _validate_geometry(output_paths)
+        return (ok, detail) if not ok else _validate_rigs(output_paths)
     if kind == "rig_animate":
         ok, detail = _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES,
                                      "animated model")
-        return (ok, detail) if not ok else _validate_geometry(output_paths)
+        if not ok:
+            return ok, detail
+        ok, detail = _validate_geometry(output_paths)
+        return (ok, detail) if not ok else _validate_rigs(output_paths)
     if kind == "audio":
         return _validate_audio(output_paths)
     if kind == "assemble":
@@ -50,6 +56,17 @@ def _validate_files(paths: list[Path], exts: set[str], min_bytes: int,
         if p.stat().st_size < min_bytes:
             return False, f"{p.name}: {p.stat().st_size} bytes — too small for a real {label}"
     return True, f"{len(paths)} {label} file(s) ok"
+
+
+def _validate_rigs(paths) -> tuple[bool, str]:
+    """A character glb must actually bind its mesh to its skeleton."""
+    from .inspect3d import rig_verdict
+    for p in paths:
+        if p.suffix.lower() in (".glb", ".gltf"):
+            ok, why = rig_verdict(p)
+            if not ok:
+                return False, why
+    return True, ""
 
 
 def _validate_geometry(paths: list[Path]) -> tuple[bool, str]:

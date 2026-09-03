@@ -476,3 +476,50 @@ def test_character_mesh_is_turned_to_face_forward():
     scene = _world_tscn(None, ["res://a/character.glb"], [])
     mesh = scene.split('[node name="Mesh"')[1]
     assert "Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 0)" in mesh.split("[node")[0]
+
+
+def _glb(path: Path, doc: dict) -> Path:
+    """Minimal GLB container around a glTF JSON document."""
+    import struct
+    js = json.dumps(doc).encode()
+    js += b" " * (-len(js) % 4)
+    body = struct.pack("<I", len(js)) + b"JSON" + js
+    path.write_bytes(b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body)
+    return path
+
+
+def test_rig_without_skin_is_rejected(tmp_path):
+    """The pipeline's quietest failure: right size, every named clip, imports
+    clean -- and the bones animate nothing."""
+    from pipeline.inspect3d import has_skin, rig_verdict
+    dead = _glb(tmp_path / "dead.glb", {
+        "asset": {"version": "2.0"},
+        "nodes": [{"mesh": 0, "name": "Mesh_0"}, {"name": "pelvis"}],
+        "meshes": [{"primitives": [{"attributes": {"JOINTS_0": 0, "WEIGHTS_0": 1}}]}],
+        "animations": [{"name": "run", "channels": [], "samplers": []}],
+    })
+    assert has_skin(dead) is False
+    ok, why = rig_verdict(dead)
+    assert not ok and "skin" in why
+
+
+def test_rig_with_skin_passes(tmp_path):
+    from pipeline.inspect3d import has_skin, rig_verdict
+    live = _glb(tmp_path / "live.glb", {
+        "asset": {"version": "2.0"},
+        "nodes": [{"mesh": 0, "name": "Mesh_0", "skin": 0}, {"name": "pelvis"}],
+        "meshes": [{"primitives": [{"attributes": {"JOINTS_0": 0, "WEIGHTS_0": 1}}]}],
+        "skins": [{"joints": [1], "inverseBindMatrices": 2}],
+    })
+    assert has_skin(live) is True
+    assert rig_verdict(live)[0]
+
+
+def test_unreadable_model_is_never_rejected(tmp_path):
+    """Same rule as the geometry gate: only an objectively broken signal fails a
+    task, because a false rejection costs a full regeneration."""
+    from pipeline.inspect3d import has_skin, rig_verdict
+    junk = tmp_path / "junk.glb"
+    junk.write_bytes(b"not a glb at all")
+    assert has_skin(junk) is None
+    assert rig_verdict(junk)[0]
