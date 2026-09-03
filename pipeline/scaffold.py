@@ -18,7 +18,6 @@ PROJECT_GODOT = """config_version=5
 
 config/name="{title}"
 run/main_scene="res://scenes/world.tscn"
-config/features=PackedStringArray("4.4")
 
 [input]
 

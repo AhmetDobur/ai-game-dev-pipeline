@@ -36,6 +36,10 @@ def main():
 
     sub.add_parser("resume", help="continue every run interrupted by kill/shutdown/power cut")
 
+    p_retry = sub.add_parser("retry", help="re-open a failed run: reset failed/blocked "
+                                           "tasks (done work is kept) and re-execute")
+    p_retry.add_argument("run_id")
+
     sub.add_parser("watch", help="watch the inbox folder and auto-start dropped instruction.md files")
 
     args = ap.parse_args()
@@ -66,6 +70,14 @@ def main():
         from pipeline.orchestrate import resume_incomplete_runs
         resumed = resume_incomplete_runs(cfg, conn)
         print(f"resumed {len(resumed)} run(s)" if resumed else "nothing to resume")
+    elif args.cmd == "retry":
+        from pipeline import livelog
+        from pipeline.orchestrate import execute_run
+        livelog.tee_stdout = True
+        n = db.reopen_run(conn, args.run_id)
+        print(f"retry {args.run_id}: reset {n} task(s)")
+        execute_run(cfg, conn, args.run_id)
+        print(f"retry {args.run_id}: {db.get_run(conn, args.run_id)['status']}")
     elif args.cmd == "watch":
         from pipeline.watch import watch_loop
         watch_loop(cfg)

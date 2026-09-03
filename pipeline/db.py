@@ -237,6 +237,19 @@ def reclaim_stale(conn, run_id: str | None = None) -> int:
 
 
 @_locked
+def reopen_run(conn, run_id: str) -> int:
+    """Reset every non-done task of a failed run so it can be re-executed.
+    Done tasks keep their outputs — only the broken tail re-runs."""
+    cur = conn.execute(
+        "UPDATE tasks SET status='pending', attempts=0, error='', updated_at=?"
+        " WHERE run_id=? AND status!='done'", (time.time(), run_id))
+    conn.execute("UPDATE runs SET status='in_progress', error='' WHERE id=?",
+                 (run_id,))
+    conn.commit()
+    return cur.rowcount
+
+
+@_locked
 def incomplete_runs(conn) -> list[str]:
     return [r["id"] for r in conn.execute(
         "SELECT id FROM runs WHERE status IN ('pending','in_progress') ORDER BY created_at")]

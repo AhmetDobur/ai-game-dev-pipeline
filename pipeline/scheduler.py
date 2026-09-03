@@ -7,6 +7,7 @@ The motion wave (Blender + UniRig/Kimodo) is GPU-bound, so it runs serially like
 every other wave — one thing on the 24GB card at a time. assemble tasks are
 CPU-only and run between waves.
 """
+import re
 import time
 import traceback
 from pathlib import Path
@@ -44,6 +45,7 @@ class Scheduler:
         self.wave_setup = wave_setup or {}
         self.wave_teardown = wave_teardown or {}
         self.godot_binary = godot_binary
+        self._heals = 0
 
     # -- public ---------------------------------------------------------------
 
@@ -129,7 +131,10 @@ class Scheduler:
         t0 = time.monotonic()
         # attempts persist across process death: resume continues the count
         # instead of granting a crash-looping task infinite retries
-        for attempt in range(task.get("attempts", 0) + 1, self.max_attempts + 1):
+        # code retries are cheap (no model reload) and attempt 3 is often nearly
+        # right — give the coder more room than the asset stages
+        cap = self.max_attempts + 2 if task["type"] == "code" else self.max_attempts
+        for attempt in range(task.get("attempts", 0) + 1, cap + 1):
             db.update_task(self.conn, task["id"], attempts=attempt)
             try:
                 # pass the previous failure so the executor can prompt a fix,
@@ -160,7 +165,32 @@ class Scheduler:
             last_error = detail
         db.update_task(self.conn, task["id"], status="failed",
                        error=last_error or f"exhausted {self.max_attempts} attempts")
+        if task["type"] == "assemble":
+            self._heal_from_boot_log(task["id"], last_error or "")
         self._print_eta()
+
+    def _heal_from_boot_log(self, assemble_id: str, boot_log: str) -> None:
+        """Self-heal: a boot failure that names a generated script re-opens THAT
+        code task with the runtime error as its fix note, then re-opens assemble.
+        The wave loop re-runs the coder wave on the next cycle. Bounded so a
+        script the coder can never fix doesn't loop the run forever."""
+        if self._heals >= 2:
+            return
+        scripts = set(re.findall(r"res://([\w/.-]+\.gd)", boot_log))
+        if not scripts:
+            return
+        healed = []
+        for t in db.list_tasks(self.conn, self.run_id):
+            if t["type"] == "code" and t["status"] == "done" and any(
+                    t["output_path"].replace("\\", "/").endswith(s) for s in scripts):
+                db.update_task(self.conn, t["id"], status="pending", attempts=0,
+                               error=f"the exported game failed at runtime:\n{boot_log[-1500:]}")
+                healed.append(t["id"])
+        if healed:
+            self._heals += 1
+            db.update_task(self.conn, assemble_id, status="pending", attempts=0, error="")
+            print(f"[heal] boot failure -> re-coding {healed}, retrying assemble "
+                  f"(heal {self._heals}/2)", flush=True)
 
     def _print_eta(self) -> None:
         from . import eta  # local import: eta imports this module's wave maps
