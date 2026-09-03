@@ -53,7 +53,7 @@
   "7": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "blurry, low quality, watermark, text, background scenery, archway, doorway, frame, border, pedestal, floor, room, multiple people, two figures",
+      "text": "blurry, low quality, watermark, text, background scenery, archway, doorway, frame, border, multiple people, two figures",
       "clip": [
         "4",
         1
