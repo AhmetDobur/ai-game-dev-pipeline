@@ -92,6 +92,12 @@ HALL_L, HALL_W, HALL_H = 44.0, 18.0, 13.0
 _WALL_T = 0.6
 
 
+def _mix(a, b, k):
+    """k=0 keeps a, k=1 becomes b. Used to darken palette swatches toward the
+    reference's near-black ground without losing its hue."""
+    return tuple(round(a[i] * (1 - k) + b[i] * k, 3) for i in range(3))
+
+
 def _c(rgb, a=1.0):
     r, g, b = rgb
     return f"Color({r}, {g}, {b}, {a})"
@@ -131,16 +137,16 @@ def _hall_geometry(pal: dict, sub: list) -> list:
     """Floor, carpet, four walls, ceiling, colonnade, apse steps, rose window."""
     hw, hl = HALL_W / 2, HALL_L / 2
     for mid, rgb, rough, metal in (
-            ("mat_floor", pal["stone"], 0.25, 0.15),
-            ("mat_wood", pal["wood"], 0.7, 0.05),
-            ("mat_accent", pal["accent"], 0.35, 0.2),
-            ("mat_dark", pal["shadow"], 0.8, 0.0)):
+            ("mat_floor", _mix(pal["stone"], pal["shadow"], 0.45), 0.18, 0.25),
+            ("mat_wood", _mix(pal["wood"], pal["shadow"], 0.6), 0.75, 0.0),
+            ("mat_accent", pal["accent"], 0.3, 0.15),
+            ("mat_dark", _mix(pal["shadow"], (0, 0, 0), 0.5), 0.9, 0.0)):
         sub.append(f'[sub_resource type="StandardMaterial3D" id="{mid}"]\n'
                    f'albedo_color = {_c(rgb)}\nroughness = {rough}\nmetallic = {metal}')
     # the rose window is the hall's far light source, so it emits rather than reflects
     sub.append(f'[sub_resource type="StandardMaterial3D" id="mat_glass"]\n'
                f'albedo_color = {_c(pal["gold"])}\nemission_enabled = true\n'
-               f'emission = {_c(pal["gold"])}\nemission_energy_multiplier = 6.0')
+               f'emission = {_c(pal["gold"])}\nemission_energy_multiplier = 3.0')
 
     n = [
         _box_body("Floor", (HALL_W, 0.4, HALL_L), (0, -0.2, 0), "mat_floor", sub),
@@ -225,8 +231,8 @@ shape = SubResource("prop_shape")
         f"""[node name="Candle{i}" type="OmniLight3D" parent="."]
 position = Vector3({x}, 3.2, {z})
 light_color = Color(1, 0.72, 0.42, 1)
-light_energy = 4.0
-omni_range = 13.0
+light_energy = 2.4
+omni_range = 8.5
 shadow_enabled = {"true" if i % 3 == 0 else "false"}"""
         for i, (x, z) in enumerate(candle_slots))
 
@@ -251,13 +257,13 @@ ambient_light_source = 2
 ; hides whatever the art stage actually produced. Mood belongs to the lights
 ; (the candles below), not to a global wash over every asset.
 ambient_light_color = Color(0.30, 0.29, 0.28, 1)
-ambient_light_energy = 0.25
+ambient_light_energy = 0.10
 tonemap_mode = 3
 glow_enabled = true
 glow_intensity = 0.6
 glow_bloom = 0.15
 volumetric_fog_enabled = true
-volumetric_fog_density = 0.008
+volumetric_fog_density = 0.004
 volumetric_fog_albedo = Color(0.55, 0.50, 0.45, 1)
 volumetric_fog_emission = Color(0.04, 0.032, 0.022, 1)
 
