@@ -186,3 +186,26 @@ def test_frame_data_only_on_combat_sim():
     repair_task_list(tasks)
     assert "frame_data" not in tasks[0]["spec"]   # typed junk on the wrong file
     assert tasks[1]["spec"]["frame_data"] == fd   # the real contract survives
+
+
+def test_rig_on_art_retargeted_through_synthesized_mesh():
+    # run c293365cffa0's router rigged the design_2d directly and put string
+    # junk in frame_data; both must repair without a retry round
+    tasks = [
+        {"id": "char_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "an imam brawler, solo"}},
+        {"id": "anim", "type": "rig_animate", "depends_on": ["char_art"],
+         "spec": {"mesh_from": "char_art", "body_plan": "humanoid",
+                  "animations": ["idle"]}},
+        {"id": "player", "type": "code", "depends_on": [],
+         "spec": {"file": "scripts/player.gd", "description": "d",
+                  "frame_data": "frame_data"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks, [])
+    by = {t["id"]: t for t in tasks}
+    assert by["anim"]["spec"]["mesh_from"] == "char_art_mesh"
+    assert by["char_art_mesh"]["spec"]["concept_from"] == "char_art"
+    assert "char_art_mesh" in by["anim"]["depends_on"]
+    assert "frame_data" not in by["player"]["spec"]
+    validate_task_list(tasks)

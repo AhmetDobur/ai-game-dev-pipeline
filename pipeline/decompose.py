@@ -226,6 +226,19 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
                                      "concept_from": t["id"]}})
         ids.add(mid)
     tasks.extend(synthesized)
+    # a router often rigs the ART, not the mesh: retarget mesh_from through the
+    # design_3d built from that design_2d (synthesized above if it was missing)
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    for t in tasks:
+        if not (isinstance(t, dict) and t.get("type") == "rig_animate"):
+            continue
+        m = t["spec"].get("mesh_from")
+        if isinstance(m, str) and by_id.get(m, {}).get("type") == "design_2d":
+            mesh = next((x["id"] for x in tasks if isinstance(x, dict)
+                         and x.get("type") == "design_3d"
+                         and x["spec"].get("concept_from") == m), None)
+            if mesh:
+                t["spec"]["mesh_from"] = mesh
     for t in tasks:
         if not isinstance(t, dict):
             continue
@@ -257,6 +270,8 @@ def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
             # frame_data is ONLY the combat-timing contract; routers stuff generic
             # config in it (lighting, camera...) which would trigger the combat-sim
             # grader on an unrelated task. Strip junk KEYS, keep real move entries.
+            if fd is not None and not isinstance(fd, dict):
+                del t["spec"]["frame_data"]   # string/list junk ("frame_data")
             if isinstance(fd, dict):
                 moves = {k: v for k, v in fd.items()
                          if isinstance(v, dict) and "startup" in v}
