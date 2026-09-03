@@ -47,7 +47,10 @@ class MotionStage:
         r = subprocess.run(
             [self.blender, "--background", "--python", self.script, "--", json.dumps(args)],
             capture_output=True, encoding="utf-8", errors="replace", timeout=self.timeout_s)
-        produced = sorted(out_dir.glob("*.glb"))
+        # "_"-prefixed files are the blender script's temps (e.g. _unirig.glb),
+        # not animation clips — returning one would corrupt the character pick
+        produced = sorted(p for p in out_dir.glob("*.glb")
+                          if not p.name.startswith("_"))
         if r.returncode != 0 or not produced:
             raise RuntimeError(
                 f"blender motion stage failed (rc={r.returncode}):\n"

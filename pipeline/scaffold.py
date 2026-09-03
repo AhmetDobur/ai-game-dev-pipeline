@@ -161,7 +161,9 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         files = [Path(p) for p in paths if p]
         if not files:
             continue
-        slug = dep.split("-")[-1]
+        # ids are "<12-hex-run-id>-<decomposer-id>"; the decomposer id itself may
+        # contain hyphens, so split once from the left, not from the right
+        slug = dep.split("-", 1)[1] if "-" in dep else dep
         copied = []
         for f in files:
             if f.suffix.lower() in (".glb", ".gltf", ".png", ".jpg", ".webp") and f.exists():

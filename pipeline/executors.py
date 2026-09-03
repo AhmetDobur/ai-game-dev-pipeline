@@ -174,7 +174,9 @@ def build_executors(cfg: dict, workspace: Path,
         # stable, predictable location so users find the build without a task id
         dist = workspace / "dist"
         dist.mkdir(parents=True, exist_ok=True)
-        preset = task["spec"].get("export_preset", "Windows Desktop")
+        # scaffold writes exactly one preset; a router-invented name would make
+        # godot fail with "unknown preset"
+        preset = "Windows Desktop"
         target = dist / ("game.exe" if "windows" in preset.lower() else "game.zip")
         # godot resolves a relative export path against the project, not our cwd
         r = subprocess.run([godot, "--headless", "--path", str(game_dir),

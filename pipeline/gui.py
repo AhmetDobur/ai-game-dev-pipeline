@@ -2,6 +2,7 @@
 watch the task table drain. Serves on localhost only."""
 import json
 import threading
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile
@@ -138,7 +139,10 @@ def index():
 @app.post("/api/runs")
 async def create_run(instruction: UploadFile = File(...),
                      refs: list[UploadFile] = File(default=[])):
-    uploads = Path(cfg["paths"]["workspace"]) / "uploads"
+    # per-upload directory: everyone names their file instruction.md, and the run
+    # re-reads it at execution time — a same-named later upload must never
+    # overwrite a queued or resumable run's instruction
+    uploads = Path(cfg["paths"]["workspace"]) / "uploads" / uuid.uuid4().hex[:8]
     uploads.mkdir(parents=True, exist_ok=True)
     # Path(...).name strips any client-supplied directory parts (path traversal)
     inst_path = uploads / (Path(instruction.filename or "instruction.md").name or "instruction.md")
@@ -160,7 +164,7 @@ async def create_run(instruction: UploadFile = File(...),
 async def patch_run(parent_id: str, instruction: UploadFile = File(...),
                     refs: list[UploadFile] = File(default=[])):
     from .patch import start_patch
-    uploads = Path(cfg["paths"]["workspace"]) / "uploads"
+    uploads = Path(cfg["paths"]["workspace"]) / "uploads" / uuid.uuid4().hex[:8]
     uploads.mkdir(parents=True, exist_ok=True)
     inst_path = uploads / (Path(instruction.filename or "patch.md").name or "patch.md")
     inst_path.write_bytes(await instruction.read())

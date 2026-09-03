@@ -10,7 +10,8 @@ from pipeline.validate import validate
 
 GOOD = [
     {"id": "art", "type": "design_2d", "depends_on": [], "spec": {"prompt": "p"}},
-    {"id": "mesh", "type": "design_3d", "depends_on": ["art"], "spec": {"prompt": "p"}},
+    {"id": "mesh", "type": "design_3d", "depends_on": ["art"],
+     "spec": {"prompt": "p", "concept_from": "art"}},
     {"id": "main", "type": "code", "depends_on": [], "spec": {"file": "main.gd",
                                                               "description": "d"}},
     {"id": "build", "type": "assemble", "depends_on": ["mesh", "main"], "spec": {}},
@@ -50,6 +51,40 @@ def test_structural_rules_and_repair():
     good[4] = dict(good[4], spec={"mesh_from": "art"})    # rig on a 2d image
     with pytest.raises(ValueError, match="design_3d"):
         validate_task_list(good)
+
+
+def test_repair_breaks_cycles_and_links_concepts():
+    tasks = [
+        {"id": "art", "type": "design_2d", "depends_on": [], "spec": {"prompt": "p"}},
+        {"id": "mesh", "type": "design_3d", "depends_on": ["art", "build"],
+         "spec": {"prompt": "p"}},                       # depends on assemble = cycle
+        {"id": "main", "type": "code", "depends_on": [], "spec": {"file": "m.gd"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(tasks)
+    assert "build" not in tasks[1]["depends_on"]         # cycle edge stripped
+    assert tasks[1]["spec"]["concept_from"] == "art"     # auto-linked to its 2d dep
+    validate_task_list(tasks)
+    # an irreparable cycle (two code tasks depending on each other) is rejected
+    bad = [
+        {"id": "a", "type": "code", "depends_on": ["b"], "spec": {"file": "a.gd"}},
+        {"id": "b", "type": "code", "depends_on": ["a"], "spec": {"file": "b.gd"}},
+        {"id": "art", "type": "design_2d", "depends_on": [], "spec": {"prompt": "p"}},
+        {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
+    ]
+    repair_task_list(bad)
+    with pytest.raises(ValueError, match="cycle"):
+        validate_task_list(bad)
+
+
+def test_insert_tasks_is_atomic(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    run = db.create_run(conn, "a.md")
+    broken = [dict(t) for t in GOOD]
+    broken[2] = dict(broken[2], type="nope")             # add_tasks must reject ALL
+    with pytest.raises(ValueError):
+        insert_tasks(conn, run, broken)
+    assert db.list_tasks(conn, run) == []                # zero rows, not a prefix
 
 
 def test_insert_tasks_scopes_ids_per_run(tmp_path):

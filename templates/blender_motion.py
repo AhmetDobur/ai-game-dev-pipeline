@@ -68,7 +68,10 @@ def try_unirig(mesh_obj, unirig, out_dir):
         rigged = os.path.join(out_dir, "_unirig.glb")
         export_glb(rigged)  # hand UniRig the imported mesh
         # UniRig's own CLI writes a rigged glb; convention: run.py <in> <out>
-        subprocess.run([sys.executable, os.path.join(unirig, "run.py"), rigged, rigged],
+        # sys.executable inside Blender is Blender's BUNDLED python, which has no
+        # UniRig deps — use the system python (override with UNIRIG_PYTHON)
+        py = os.environ.get("UNIRIG_PYTHON", "python")
+        subprocess.run([py, os.path.join(unirig, "run.py"), rigged, rigged],
                        check=True, cwd=unirig, timeout=1200)
         reset_scene()
         bpy.ops.import_scene.gltf(filepath=rigged)
@@ -197,8 +200,11 @@ def retarget_onto(arm, bvh_path):
         tgt = {b.name.lower(): b.name for b in arm.pose.bones}
         pairs = [(sb.name, tgt[sb.name.lower()]) for sb in src.pose.bones
                  if sb.name.lower() in tgt]
-        if not pairs:
-            return 0  # naming doesn't line up — procedural keeps the mesh moving
+        if len(pairs) < max(4, len(arm.pose.bones) // 4):
+            # a couple of coincidental name hits would "succeed" into a mostly
+            # static body — demand a real skeleton match or go procedural
+            print(f"[motion] only {len(pairs)} bone(s) matched, procedural instead")
+            return 0
         act = src.animation_data.action if src.animation_data else None
         f0, f1 = (int(act.frame_range[0]), int(act.frame_range[1])) if act else (0, FPS)
         arm.animation_data_create()
@@ -247,7 +253,7 @@ def procedural_extras(arm, clip, extras):
     """Secondary motion for non-skeletal parts (tail/jaw/wings). Runs on EVERY clip,
     including the mocap/retarget path — a mocap body still needs its tail to swing."""
     bones = [pb for pb in arm.pose.bones
-             if any(k in pb.name.lower() for k in ("tail", "jaw", "wing"))]
+             if any(k in pb.name.lower() for k in ("tail", "jaw", "wing", "cloak", "cape"))]
     if not bones:
         return
     bpy.context.view_layer.objects.active = arm
@@ -264,6 +270,8 @@ def procedural_extras(arm, clip, extras):
                 pb.rotation_euler = (max(0.0, math.sin(phase)) if clip == "attack" else 0, 0, 0)
             elif "wing" in name and "wings" in extras:
                 pb.rotation_euler = (0, 0.9 * math.sin(phase), 0)
+            elif ("cloak" in name or "cape" in name) and "cloak" in extras:
+                pb.rotation_euler = (0.15 * math.sin(phase), 0, 0.1 * math.sin(phase * 0.7))
             else:
                 continue
             pb.keyframe_insert("rotation_euler", frame=f)

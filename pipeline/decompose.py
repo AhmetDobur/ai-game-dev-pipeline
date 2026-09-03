@@ -83,7 +83,7 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
             repair_task_list(tasks)
             validate_task_list(tasks)
             return tasks
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             last_err = e
             messages = messages[:1] + [
                 {"role": "assistant", "content": reply},
@@ -145,6 +145,19 @@ def repair_task_list(tasks) -> None:
                 deps.add(v)
         if t.get("type") == "assemble":
             deps = ids - {t.get("id")}
+        else:
+            # nothing may depend on assemble — with assemble depending on
+            # everything, that edge would be a cycle
+            deps -= {x.get("id") for x in tasks
+                     if isinstance(x, dict) and x.get("type") == "assemble"}
+        if (t.get("type") == "design_3d" and not t["spec"].get("concept_from")):
+            # the 3D stage is image-conditioned; auto-link the design_2d this
+            # task already depends on rather than reject the plan
+            by_id = {x.get("id"): x for x in tasks if isinstance(x, dict)}
+            for d in deps:
+                if by_id.get(d, {}).get("type") == "design_2d":
+                    t["spec"]["concept_from"] = d
+                    break
         if t.get("type") == "code" and not t["spec"].get("file"):
             # a consistent invented path beats a rejected plan; the coder writes
             # whatever file it is told to
@@ -156,6 +169,8 @@ def repair_task_list(tasks) -> None:
 def validate_task_list(tasks) -> None:
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("decomposition is not a non-empty JSON array")
+    if any(not isinstance(t, dict) for t in tasks):
+        raise ValueError("every task must be a JSON object")
     ids = [t.get("id") for t in tasks]
     if len(ids) != len(set(ids)) or any(not i for i in ids):
         raise ValueError("task ids must be unique and non-empty")
@@ -184,9 +199,10 @@ def validate_task_list(tasks) -> None:
             if not spec.get("prompt"):
                 raise ValueError(f'design_3d {t["id"]}: spec needs a "prompt"')
             c = spec.get("concept_from")
-            if c and by_id.get(c, {}).get("type") != "design_2d":
-                raise ValueError(f'design_3d {t["id"]}: concept_from must name a'
-                                 " design_2d task id")
+            if by_id.get(c, {}).get("type") != "design_2d":
+                raise ValueError(f'design_3d {t["id"]}: the 3D generator is image-'
+                                 'conditioned — "concept_from" must name a design_2d'
+                                 " task whose image it will be built from")
         if t["type"] == "rig_animate":
             m = spec.get("mesh_from")
             if by_id.get(m, {}).get("type") != "design_3d":
@@ -194,6 +210,22 @@ def validate_task_list(tasks) -> None:
                                  " design_3d task id (the mesh to rig)")
         if t["type"] == "code" and not spec.get("file"):
             raise ValueError(f'code {t["id"]}: spec needs a "file" path')
+    # cycle check (Kahn): a cyclic graph would deadlock the scheduler forever
+    indeg = {t["id"]: len(t.get("depends_on", [])) for t in tasks}
+    dependents: dict[str, list[str]] = {}
+    for t in tasks:
+        for d in t.get("depends_on", []):
+            dependents.setdefault(d, []).append(t["id"])
+    queue = [i for i, n in indeg.items() if n == 0]
+    seen = 0
+    while queue:
+        seen += 1
+        for nxt in dependents.get(queue.pop(), []):
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                queue.append(nxt)
+    if seen != len(tasks):
+        raise ValueError("the dependency graph contains a cycle")
 
 
 def insert_tasks(conn, run_id: str, tasks: list[dict]) -> None:
@@ -211,8 +243,9 @@ def insert_tasks(conn, run_id: str, tasks: list[dict]) -> None:
             return {k: remap(v) for k, v in value.items()}
         return value
 
-    for t in tasks:
-        db.add_task(conn, run_id, t["type"], remap(t["spec"]),
-                    depends_on=[id_map[d] for d in t.get("depends_on", [])],
-                    task_id=id_map[t["id"]])
+    # one transaction: resume treats "has tasks" as "has ALL tasks", so a crash
+    # mid-insert must leave zero rows, never a partial graph
+    db.add_tasks(conn, run_id,
+                 [(id_map[t["id"]], t["type"], remap(t["spec"]),
+                   [id_map[d] for d in t.get("depends_on", [])]) for t in tasks])
     print(json.dumps({"run": run_id, "tasks": len(tasks)}))

@@ -38,6 +38,9 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
     router = coder = None
     try:
         run = db.get_run(conn, run_id)
+        # mark active before planning, not after — the GUI's live view selects
+        # the in_progress run, and planning is exactly what it should show
+        db.set_run_status(conn, run_id, "in_progress")
         workspace = Path(cfg["paths"]["workspace"]) / "runs" / run_id
         workspace.mkdir(parents=True, exist_ok=True)
         instruction = Path(run["instruction_path"]).read_text(encoding="utf-8")
@@ -53,8 +56,8 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
 
         # resume support: a run that already has tasks was interrupted mid-flight —
         # skip planning and let the scheduler reclaim + continue. Both the fresh
-        # (db.add_tasks) and patch (db.add_tasks_full) inserts are atomic, so
-        # "has tasks" means "has ALL tasks".
+        # (insert_tasks -> db.add_tasks) and patch (db.add_tasks_full) inserts are
+        # single transactions, so "has tasks" means "has ALL tasks".
         import json
         from . import livelog
         if not db.list_tasks(conn, run_id):

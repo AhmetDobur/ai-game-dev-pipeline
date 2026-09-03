@@ -30,8 +30,14 @@ def append(run_id: str, text: str) -> None:
     with _lock:
         _buffers[run_id] = (_buffers.get(run_id, "") + text)[-MAX_CHARS:]
     if tee_stdout:
-        sys.stdout.write(text)
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        except UnicodeEncodeError:
+            # cp1252 console on Windows can't take every model token; the tee is
+            # cosmetic — never let it kill the run
+            sys.stdout.write(text.encode("ascii", "replace").decode())
+            sys.stdout.flush()
 
 
 def get(run_id: str) -> dict:

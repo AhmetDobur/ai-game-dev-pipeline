@@ -82,7 +82,9 @@ def build_patch_graph(parent_rows: list[dict], patch_tasks: list[dict],
             "spec": _reprefix(t["spec"], parent_id, run_id),
             "depends_on": [_reprefix(d, parent_id, run_id) for d in t["depends_on"]],
             "status": t["status"], "attempts": t["attempts"],
-            "output_path": t["output_path"].replace(src_frag, dst_frag),
+            # normalize separators first: on Windows the stored path is
+            # backslashed and would never match the forward-slash fragment
+            "output_path": t["output_path"].replace("\\", "/").replace(src_frag, dst_frag),
             "error": t["error"],
         }
 
@@ -126,12 +128,17 @@ def build_patch_graph(parent_rows: list[dict], patch_tasks: list[dict],
             }
             seeds.add(nid)
 
-    # assemble always runs last and re-exports the whole game after any change
-    others = [rid for rid, r in rows.items() if r["type"] != "assemble"]
+    # assemble always runs last and re-exports the whole game after any change;
+    # strip any dependency ON assemble (an ADD op may name it) or that edge plus
+    # this rewiring would be a cycle
+    assemble_ids = {rid for rid, r in rows.items() if r["type"] == "assemble"}
+    others = [rid for rid in rows if rid not in assemble_ids]
     for r in rows.values():
         if r["type"] == "assemble":
             r["depends_on"] = list(others)
             seeds.add(r["id"])
+        else:
+            r["depends_on"] = [d for d in r["depends_on"] if d not in assemble_ids]
 
     # patching a parent that ended in failure must repair it: any copied task that
     # is not already 'done' (a failed/blocked/interrupted task) is re-run, or the

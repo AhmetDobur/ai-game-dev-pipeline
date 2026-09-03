@@ -32,9 +32,13 @@ def _dirs(cfg: dict) -> tuple[Path, Path]:
 
 
 def _refs_for(md: Path) -> list[Path]:
+    """`mygame.png` / `mygame_ref.jpg` belong to `mygame.md`. Exact-stem prefix
+    match via iterdir — glob would break on metacharacters in the stem, and a
+    bare startswith would steal `mygame2.md`'s images."""
     exts = {".png", ".jpg", ".jpeg", ".webp"}
-    return [p for p in md.parent.glob(md.stem + "*")
-            if p.suffix.lower() in exts and p.is_file()]
+    return [p for p in md.parent.iterdir()
+            if p.is_file() and p.suffix.lower() in exts
+            and (p.stem == md.stem or p.stem.startswith(md.stem + "_"))]
 
 
 def _claim_and_start(cfg: dict, conn, md: Path) -> str | None:
@@ -101,10 +105,14 @@ def reconcile(cfg: dict, conn) -> int:
             continue
         if f.resolve() in referenced:
             continue
+        # refs were renamed alongside the claim as "<dest-stem>__<name>" — recover
+        # them too, or the reconciled run silently plans without its images
+        refs = [str(p) for p in started.iterdir()
+                if p.is_file() and p.stem.startswith(f.stem + "__")]
         try:
             parent = _patch_parent(f)
-            run_id = (start_patch(cfg, conn, parent, f, []) if parent
-                      else start_run(cfg, conn, f, []))
+            run_id = (start_patch(cfg, conn, parent, f, refs) if parent
+                      else start_run(cfg, conn, f, refs))
         except Exception as e:
             # a bad file (e.g. patch of a nonexistent parent) must not wedge
             # startup — it would re-raise here on every boot otherwise

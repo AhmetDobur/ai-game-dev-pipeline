@@ -181,8 +181,9 @@ class Scheduler:
             return
         healed = []
         for t in db.list_tasks(self.conn, self.run_id):
+            outs = [o.replace("\\", "/") for o in t["output_path"].split(";") if o]
             if t["type"] == "code" and t["status"] == "done" and any(
-                    t["output_path"].replace("\\", "/").endswith(s) for s in scripts):
+                    o.endswith(s) for o in outs for s in scripts):
                 db.update_task(self.conn, t["id"], status="pending", attempts=0,
                                error=f"the exported game failed at runtime:\n{boot_log[-1500:]}")
                 healed.append(t["id"])
