@@ -18,9 +18,37 @@ const STICK_DEADZONE := 0.2
 const GRAVITY := 18.0
 const PITCH_LIMIT := 1.2
 const CAM_OFFSET := Vector3(0, 0.4, 3.5)
+const MOUSE_SENS := 0.0022
 
 @onready var _pivot: Node3D = $CamPivot
 @onready var _camera: Camera3D = get_node_or_null(camera_path) as Camera3D
+
+
+func _ready() -> void:
+	# Player 1 is the keyboard+mouse seat. Without this the game is walk-only:
+	# WASD moves but nothing turns, so you can never look at the room you are in.
+	if device == 0:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+
+func _input(event: InputEvent) -> void:
+	# _input, not _unhandled_input: the split-screen Controls sit above the
+	# players in the input chain and a captured-mouse look must not depend on
+	# whether a container let the event through.
+	if device != 0:
+		return
+	if event is InputEventMouseMotion \
+			and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+		rotate_y(-event.relative.x * MOUSE_SENS)
+		_pivot.rotation.x = clampf(_pivot.rotation.x - event.relative.y * MOUSE_SENS,
+				-PITCH_LIMIT, PITCH_LIMIT)
+	elif event.is_action_pressed("ui_cancel"):
+		# Esc releases the cursor -- otherwise a windowed build traps the mouse
+		# with no way to reach the close button.
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	elif event is InputEventMouseButton and event.pressed \
+			and Input.get_mouse_mode() == Input.MOUSE_MODE_VISIBLE:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 func _stick(axis_x: int, axis_y: int) -> Vector2:

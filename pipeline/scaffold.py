@@ -257,6 +257,7 @@ stretch = true
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
+mouse_filter = 2
 
 [node name="View" type="SubViewport" parent="Split/Half{i}"]
 handle_input_locally = false
