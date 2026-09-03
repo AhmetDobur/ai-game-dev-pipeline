@@ -33,20 +33,37 @@ is no Input.get_mouse_delta):
     @export var speed := 4.0
     @export var run_speed := 8.0
     @onready var cam_pivot: Node3D = $CamPivot
+    var anim: AnimationPlayer
+    var current_clip := ""
+    func _ready() -> void:
+        Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+        anim = find_child("AnimationPlayer", true, false)
+        if anim:
+            for a in anim.get_animation_list():
+                anim.get_animation(a).loop_mode = Animation.LOOP_LINEAR
     func _unhandled_input(event: InputEvent) -> void:
         if event is InputEventMouseMotion:
             rotate_y(-event.relative.x * 0.003)
             cam_pivot.rotate_x(-event.relative.y * 0.003)
             cam_pivot.rotation.x = clampf(cam_pivot.rotation.x, -1.2, 1.2)
+    func _play(clip: String) -> void:
+        if anim and clip != current_clip and anim.has_animation(clip):
+            anim.play(clip, 0.25)   # 0.25s cross-fade between clips
+            current_clip = clip
     func _physics_process(delta: float) -> void:
         var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
         var dir := (transform.basis * Vector3(input.x, 0, input.y)).normalized()
-        var s := run_speed if Input.is_key_pressed(KEY_SHIFT) else speed
+        var running := Input.is_key_pressed(KEY_SHIFT)
+        var s := run_speed if running else speed
         velocity.x = dir.x * s
         velocity.z = dir.z * s
         if not is_on_floor():
             velocity.y -= 20.0 * delta
         move_and_slide()
+        if dir.length() > 0.1:
+            _play("run" if running else "walk")
+        else:
+            _play("idle")
 
 {frame_data_note}{fix_note}Reply with ONLY the file content in a single fenced code block."""
 
@@ -129,16 +146,31 @@ def build_executors(cfg: dict, workspace: Path,
         return [path, *produced]
 
     def design_2d(task: dict, out_dir: Path) -> list[Path]:
+        # a reference image switches to img2img so the user's art guides
+        # composition and palette instead of being ignored
+        ref = task["spec"].get("ref_image", "")
+        if ref and Path(ref).is_file():
+            return comfy.run_workflow(cfg["comfy"]["sdxl_img2img_workflow"],
+                                      {"prompt": task["spec"]["prompt"],
+                                       "image": ref}, out_dir)
         return comfy.run_workflow(cfg["comfy"]["sdxl_workflow"],
                                   {"prompt": task["spec"]["prompt"]}, out_dir)
 
     def design_3d(task: dict, out_dir: Path) -> list[Path]:
-        # conditioned on the matching design_2d output when the decomposer linked one
+        # image precedence: a user reference (cropped to its main figure, since
+        # TRELLIS rebuilds everything in frame) beats the generated concept art
         subs = {"prompt": task["spec"].get("prompt", "")}
-        concept = task["spec"].get("concept_from", "")
-        if concept:
-            subs["image"] = str(_resolve_dep(task, concept))
-        return comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir)
+        ref = task["spec"].get("ref_image", "")
+        if ref and Path(ref).is_file():
+            from .refimage import crop_main_subject
+            subs["image"] = str(crop_main_subject(Path(ref), out_dir / "ref_crop.png"))
+        elif task["spec"].get("concept_from"):
+            subs["image"] = str(_resolve_dep(task, task["spec"]["concept_from"]))
+        outputs = comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir)
+        for p in outputs:
+            if p.suffix.lower() in (".glb", ".gltf"):
+                motion.render_preview(p)  # PNG beside the mesh: SEE what was made
+        return outputs
 
     def rig_animate(task: dict, out_dir: Path) -> list[Path]:
         spec = task["spec"]

@@ -33,6 +33,11 @@ Rules:
   centered, plain background, "solo" in the prompt. Never a character sheet, turnaround,
   or multiple poses — the 3D stage reconstructs everything in frame, so three poses
   become three meshes.
+- A design_3d is always ONE object or ONE character — a bookshelf, a table, a statue.
+  NEVER a whole room, interior, hall, landscape or scene: the 3D generator cannot
+  build spaces, only things. For an environment, emit SEVERAL prop-sized design_3d
+  tasks (2-4 of them, each with its own single-object design_2d); the engine
+  arranges them into the room automatically.
 - code tasks for the Godot project; exactly one final "assemble" task depending on everything.
 - When the game description contains combat timing tables (frame data), copy them
   VERBATIM into one code task with "file": "scripts/combat_sim.gd" as
@@ -40,6 +45,11 @@ Rules:
   "knockback": [x, y], "tolerance": n}}}}. Frame counts are at 60fps. That task
   will be graded by a headless simulation against these exact numbers.
 - Reference images uploaded by the user: {ref_note}
+- When a reference image clearly depicts a task's subject, set "ref_image": "<one
+  of the paths above>" inside that design_2d or design_3d spec. A character
+  reference on a design_3d makes the mesh match the reference directly; an
+  environment/mood reference on a design_2d guides its composition. Never invent
+  paths not in the list.
 
 Example (a different, minimal game — copy the STRUCTURE, not the content):
 [
@@ -80,7 +90,7 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
                             max_tokens=max_tokens, on_token=on_token)
         try:
             tasks = extract_json(reply)
-            repair_task_list(tasks)
+            repair_task_list(tasks, reference_images)
             validate_task_list(tasks)
             return tasks
         except (ValueError, KeyError, TypeError, AttributeError) as e:
@@ -127,7 +137,26 @@ def decompose_patch(router, manifest_rows: list[dict], instruction: str,
     return patch_tasks
 
 
-def repair_task_list(tasks) -> None:
+def _repair_ref_image(spec: dict, reference_images: list[str]) -> None:
+    """The router mangles paths; keep ref_image only if it resolves to a real ref
+    (exact, or unique basename-substring match), else drop it silently."""
+    ref = spec.get("ref_image")
+    if not ref or not isinstance(ref, str):
+        spec.pop("ref_image", None)
+        return
+    if ref in reference_images:
+        return
+    from pathlib import PurePath
+    frag = PurePath(ref.replace("\\", "/")).name.lower()
+    hits = [r for r in reference_images
+            if frag and frag in PurePath(r.replace("\\", "/")).name.lower()]
+    if len(hits) == 1:
+        spec["ref_image"] = hits[0]
+    else:
+        spec.pop("ref_image", None)
+
+
+def repair_task_list(tasks, reference_images: list[str] | None = None) -> None:
     """Deterministic fixes for mistakes every small router makes: spec references
     (concept_from/mesh_from) imply dependencies, and assemble depends on everything."""
     if not isinstance(tasks, list):
@@ -150,7 +179,10 @@ def repair_task_list(tasks) -> None:
             # everything, that edge would be a cycle
             deps -= {x.get("id") for x in tasks
                      if isinstance(x, dict) and x.get("type") == "assemble"}
-        if (t.get("type") == "design_3d" and not t["spec"].get("concept_from")):
+        if t.get("type") in ("design_2d", "design_3d"):
+            _repair_ref_image(t["spec"], reference_images or [])
+        if (t.get("type") == "design_3d" and not t["spec"].get("concept_from")
+                and not t["spec"].get("ref_image")):
             # the 3D stage is image-conditioned; auto-link the design_2d this
             # task already depends on rather than reject the plan
             by_id = {x.get("id"): x for x in tasks if isinstance(x, dict)}
@@ -199,10 +231,10 @@ def validate_task_list(tasks) -> None:
             if not spec.get("prompt"):
                 raise ValueError(f'design_3d {t["id"]}: spec needs a "prompt"')
             c = spec.get("concept_from")
-            if by_id.get(c, {}).get("type") != "design_2d":
+            if not spec.get("ref_image") and by_id.get(c, {}).get("type") != "design_2d":
                 raise ValueError(f'design_3d {t["id"]}: the 3D generator is image-'
-                                 'conditioned — "concept_from" must name a design_2d'
-                                 " task whose image it will be built from")
+                                 'conditioned — set "concept_from" to a design_2d task'
+                                 ' id (or "ref_image" to a provided reference image)')
         if t["type"] == "rig_animate":
             m = spec.get("mesh_from")
             if by_id.get(m, {}).get("type") != "design_3d":

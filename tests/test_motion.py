@@ -13,8 +13,12 @@ def test_motion_stage_passes_args_and_collects_glb(tmp_path, monkeypatch):
     captured = {}
 
     def fake_run(argv, **kw):
+        try:
+            args = json.loads(argv[-1])
+        except json.JSONDecodeError:
+            # render_preview's call (argv ends in a .png path) — not the build
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
         captured["argv"] = argv
-        args = json.loads(argv[-1])
         from pathlib import Path
         (Path(args["out_dir"]) / "idle.glb").write_bytes(b"g" * 60_000)
         return SimpleNamespace(returncode=0, stdout="", stderr="")

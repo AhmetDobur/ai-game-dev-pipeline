@@ -29,6 +29,20 @@ class MotionStage:
         self.kimodo_url = kimodo_url
         self.timeout_s = timeout_s
 
+    def render_preview(self, glb: Path) -> Path | None:
+        """Best-effort 512px PNG next to the glb so a human (or a review stage) can
+        see what was generated. Failure never blocks the pipeline."""
+        out = glb.with_suffix(".preview.png")
+        script = str(Path(self.script).parent / "blender_preview.py")
+        try:
+            r = subprocess.run(
+                [self.blender, "--background", "--python", script, "--",
+                 str(glb), str(out)],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+            return out if r.returncode == 0 and out.exists() else None
+        except Exception:  # cosmetic side-channel: NOTHING here may block a run
+            return None
+
     def build(self, mesh_path: Path, body_plan: str, animations: list[str],
               extras: list[str], out_dir: Path) -> list[Path]:
         """Rig `mesh_path` and animate it; return the produced .glb files."""
@@ -51,6 +65,8 @@ class MotionStage:
         # not animation clips — returning one would corrupt the character pick
         produced = sorted(p for p in out_dir.glob("*.glb")
                           if not p.name.startswith("_"))
+        for p in produced:
+            self.render_preview(p)  # best-effort PNG so humans can SEE the mesh
         if r.returncode != 0 or not produced:
             raise RuntimeError(
                 f"blender motion stage failed (rc={r.returncode}):\n"

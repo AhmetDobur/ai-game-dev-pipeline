@@ -31,6 +31,7 @@ DEFAULTS: dict = {
     "comfy": {
         "url": "http://127.0.0.1:8188",
         "sdxl_workflow": "workflows/sdxl.json",
+        "sdxl_img2img_workflow": "workflows/sdxl_img2img.json",
         "trellis_workflow": "workflows/trellis.json",
         "timeout_s": 600,
     },

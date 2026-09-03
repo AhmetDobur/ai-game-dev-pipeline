@@ -21,6 +21,7 @@ import os
 import sys
 
 import bpy  # provided by Blender's own Python; absent in the pipeline venv
+import mathutils
 
 ARGS = json.loads(sys.argv[sys.argv.index("--") + 1]) if "--" in sys.argv else {}
 FPS = 30
@@ -53,7 +54,21 @@ def import_mesh(path):
     bpy.context.view_layer.objects.active = meshes[0]
     if len(meshes) > 1:
         bpy.ops.object.join()
-    return bpy.context.view_layer.objects.active
+    obj = bpy.context.view_layer.objects.active
+    # normalize: feet on the ground at origin, character-sized (the game scene
+    # assumes ~1.8m; a raw TRELLIS mesh arrives at arbitrary scale/offset)
+    bb = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
+    height = max(v.z for v in bb) - min(v.z for v in bb)
+    if height > 0:
+        s = 1.8 / height
+        obj.scale = (obj.scale[0] * s, obj.scale[1] * s, obj.scale[2] * s)
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    bb = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
+    obj.location.x -= (max(v.x for v in bb) + min(v.x for v in bb)) / 2
+    obj.location.y -= (max(v.y for v in bb) + min(v.y for v in bb)) / 2
+    obj.location.z -= min(v.z for v in bb)
+    bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
+    return obj
 
 
 # --- rigging ---------------------------------------------------------------
@@ -302,15 +317,26 @@ def main():
         mesh = import_mesh(ARGS["mesh"])
         arm = procedural_rig(mesh, body_plan)
 
+    # build every clip as a named action stashed on its own NLA track, then export
+    # ONE glb — Godot's AnimationPlayer then has idle/walk/run to switch between,
+    # instead of one file per clip of which the game could only ever use one
     for clip in ARGS.get("animations", ["idle"]):
         if arm.animation_data:
-            arm.animation_data_clear()  # each clip exports as its own action
+            arm.animation_data.action = None    # fresh action per clip
         bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""), ARGS.get("kimodo_url", ""),
                       out_dir)
         if not (bvh and retarget_onto(arm, bvh)):
             procedural_clip(arm, clip)          # base body motion (never leaves it static)
         procedural_extras(arm, clip, extras)    # tail/jaw/wings on EVERY path
-        export_glb(os.path.join(out_dir, f"{clip}.glb"))
+        act = arm.animation_data.action if arm.animation_data else None
+        if act:
+            act.name = clip
+            track = arm.animation_data.nla_tracks.new()
+            track.name = clip
+            track.strips.new(clip, int(act.frame_range[0]) + 1, act)
+    if arm.animation_data:
+        arm.animation_data.action = None        # export from NLA tracks only
+    export_glb(os.path.join(out_dir, "character.glb"))
 
 
 if __name__ == "__main__":

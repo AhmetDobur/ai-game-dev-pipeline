@@ -5,6 +5,7 @@ the input map, the export preset and a world scene wiring the generated assets â
 is written HERE, deterministically. A generated scene file is a wildcard (the
 coder has produced GDScript inside a .tscn); a templated one always parses.
 """
+import math
 import shutil
 from pathlib import Path
 
@@ -66,6 +67,20 @@ binary_format/architecture="x86_64"
 """
 
 
+def _prop_ring(env_glbs: list[str], per_glb: int = 4, radius: float = 11.0):
+    """Deterministic prop layout: each environment mesh repeated around a circle,
+    facing the center (a library IS the same bookshelf many times). Returns
+    (glb_index, x, z, yaw) tuples."""
+    total = len(env_glbs) * per_glb
+    out = []
+    for k in range(total):
+        ang = 2 * math.pi * k / total
+        x, z = radius * math.sin(ang), radius * math.cos(ang)
+        out.append((k % len(env_glbs), round(x, 2), round(z, 2),
+                    round(ang + math.pi, 4)))  # +pi: face inward
+    return out
+
+
 def _world_tscn(player_script: str | None, char_glb: str | None,
                 env_glbs: list[str]) -> str:
     ext, nodes = [], []
@@ -77,9 +92,17 @@ def _world_tscn(player_script: str | None, char_glb: str | None,
         ext.append(f'[ext_resource type="{kind}" path="{path}" id="{rid}"]')
         return str(rid)
 
-    for i, g in enumerate(env_glbs):
-        eid = ext_res("PackedScene", g)
-        nodes.append(f'[node name="Env{i}" parent="." instance=ExtResource("{eid}")]')
+    env_ids = [ext_res("PackedScene", g) for g in env_glbs]
+    for i, (gi, x, z, yaw) in enumerate(_prop_ring(env_glbs) if env_glbs else []):
+        c, s = round(math.cos(yaw), 4), round(math.sin(yaw), 4)
+        nodes.append(f"""[node name="Prop{i}" type="StaticBody3D" parent="."]
+transform = Transform3D({c}, 0, {s}, 0, 1, 0, {-s}, 0, {c}, {x}, 0, {z})
+
+[node name="PropShape{i}" type="CollisionShape3D" parent="Prop{i}"]
+position = Vector3(0, 2, 0)
+shape = SubResource("prop_shape")
+
+[node name="PropMesh{i}" parent="Prop{i}" instance=ExtResource("{env_ids[gi]}")]""")
 
     player_type = "CharacterBody3D"
     script_line = ""
@@ -91,7 +114,16 @@ def _world_tscn(player_script: str | None, char_glb: str | None,
         cid = ext_res("PackedScene", char_glb)
         char_line = f'\n[node name="Mesh" parent="Player" instance=ExtResource("{cid}")]'
 
-    return f"""[gd_scene load_steps={rid + 4} format=3]
+    # candle-warm point lights around the room + a weak cool moonlight key
+    candles = "\n\n".join(
+        f"""[node name="Candle{i}" type="OmniLight3D" parent="."]
+position = Vector3({round(7 * math.sin(2 * math.pi * i / 5), 2)}, 2.6, {round(7 * math.cos(2 * math.pi * i / 5), 2)})
+light_color = Color(1, 0.72, 0.42, 1)
+light_energy = 3.5
+omni_range = 14.0
+shadow_enabled = true""" for i in range(5))
+
+    return f"""[gd_scene load_steps={rid + 6} format=3]
 
 {chr(10).join(ext)}
 
@@ -101,22 +133,44 @@ size = Vector3(400, 1, 400)
 [sub_resource type="BoxMesh" id="floor_mesh"]
 size = Vector3(400, 1, 400)
 
+[sub_resource type="StandardMaterial3D" id="floor_mat"]
+albedo_color = Color(0.23, 0.17, 0.12, 1)
+roughness = 0.65
+metallic = 0.1
+
+[sub_resource type="BoxShape3D" id="prop_shape"]
+size = Vector3(2.4, 4, 2.4)
+
 [sub_resource type="CapsuleShape3D" id="player_shape"]
 height = 1.8
 
 [sub_resource type="Environment" id="world_env"]
+background_mode = 1
+background_color = Color(0.02, 0.015, 0.01, 1)
 ambient_light_source = 2
-ambient_light_color = Color(1, 0.93, 0.82, 1)
-ambient_light_energy = 1.2
+ambient_light_color = Color(0.45, 0.36, 0.26, 1)
+ambient_light_energy = 0.6
+tonemap_mode = 3
+glow_enabled = true
+glow_intensity = 0.6
+glow_bloom = 0.15
+volumetric_fog_enabled = true
+volumetric_fog_density = 0.02
+volumetric_fog_albedo = Color(0.85, 0.68, 0.45, 1)
+volumetric_fog_emission = Color(0.06, 0.045, 0.025, 1)
 
 [node name="World" type="Node3D"]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("world_env")
 
-[node name="Sun" type="DirectionalLight3D" parent="."]
+[node name="Moon" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.707, -0.5, 0.5, 0, 0.707, 0.707, -0.707, -0.5, 0.5, 0, 10, 0)
-light_energy = 1.2
+light_color = Color(0.65, 0.7, 0.9, 1)
+light_energy = 0.25
+shadow_enabled = true
+
+{candles}
 
 [node name="Floor" type="StaticBody3D" parent="."]
 
@@ -127,6 +181,7 @@ shape = SubResource("floor_shape")
 [node name="FloorMesh" type="MeshInstance3D" parent="Floor"]
 position = Vector3(0, -0.5, 0)
 mesh = SubResource("floor_mesh")
+material_override = SubResource("floor_mat")
 
 {chr(10).join(nodes)}
 
@@ -173,8 +228,11 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
                 copied.append(f"res://assets/{slug}/{f.name}")
         kind = dep_types.get(dep, "")
         if kind == "rig_animate" and copied:
-            idle = [c for c in copied if "idle" in c.lower()]
-            char_glb = (idle or copied)[0]
+            # character.glb carries ALL clips as named animations; per-clip files
+            # are the pre-0.7 layout, kept as fallback for old runs
+            best = ([c for c in copied if c.endswith("character.glb")]
+                    or [c for c in copied if "idle" in c.lower()] or copied)
+            char_glb = best[0]
         elif kind == "design_3d" and dep not in consumed and copied:
             env_glbs += [c for c in copied if c.endswith((".glb", ".gltf"))]
 
