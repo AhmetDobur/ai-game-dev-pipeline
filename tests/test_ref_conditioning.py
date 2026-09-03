@@ -124,6 +124,12 @@ def test_coerce_router_wrappers():
     assert _coerce_task_list(tasks[0]) == tasks               # single bare task
     assert _coerce_task_list(tasks) == tasks                  # already a list
     assert _coerce_task_list({"a": 1}) == {"a": 1}            # not coercible
+    # graph keyed by task id (id present or implied by the key)
+    keyed = {"a": {"id": "a", "type": "code", "spec": {}},
+             "b": {"type": "assemble", "spec": {}}}
+    out = _coerce_task_list(keyed)
+    assert out == [{"id": "a", "type": "code", "spec": {}},
+                   {"id": "b", "type": "assemble", "spec": {}}]
 
 
 def test_think_block_stripped():

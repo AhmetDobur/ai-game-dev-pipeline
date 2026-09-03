@@ -85,7 +85,8 @@ _THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
 
 
 def _coerce_task_list(parsed):
-    """R1-style routers wrap the array ({"tasks": [...]}) or emit one bare task."""
+    """R1-style routers wrap the array ({"tasks": [...]}), emit one bare task,
+    or key the whole graph by task id ({"build": {"type": "assemble", ...}})."""
     if isinstance(parsed, dict):
         lists = [v for v in parsed.values()
                  if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)]
@@ -93,6 +94,9 @@ def _coerce_task_list(parsed):
             return lists[0]
         if "id" in parsed and "type" in parsed:
             return [parsed]
+        if parsed and all(isinstance(v, dict) and ("type" in v or "id" in v)
+                          for v in parsed.values()):
+            return [dict(v, id=v.get("id", k)) for k, v in parsed.items()]
     return parsed
 
 
