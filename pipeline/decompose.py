@@ -100,28 +100,60 @@ _SCENE_WORDS = ("hall", "room", "interior", "environment", "scene",
 # between two props is the subject phrase itself.
 _STYLE_RE = re.compile(r"^[ \t]*style[ \t]*:[ \t]*(.+?)[ \t]*$", re.I | re.M)
 
-# Every concept that feeds TRELLIS needs all three of these, exactly once.
-_ISO_CLAUSES = ("single isolated object", "centered", "plain white background")
+# Every concept that feeds TRELLIS needs these, exactly once. The wording is
+# deliberately emphatic: the mild version ("single isolated object, centered,
+# plain white background") lost to the style tail and came back as a seated
+# portrait on a throne. "studio cutout" and the explicit no-* terms are what
+# hold. Verified by A/B render on the box.
+_ISO_COMMON = ("isolated on a plain flat white background", "studio cutout",
+               "no scenery", "no furniture", "no architecture")
+# A character must be framed head-to-toe or the mesh arrives cropped at the
+# waist; a bookshelf is not "standing, head to toe", so props get their own.
+_ISO_CHARACTER = ("full body", "head to toe", "standing", "arms away from body")
+_ISO_PROP = ("single isolated object", "centered")
 
-# Applied even when the instruction names no style. These are art-direction
-# NEUTRAL (they commit to no genre or palette) but they contradict the smooth,
-# even, low-micro-contrast prior that a bare subject phrase falls into.
+
+def _iso_clauses(is_character: bool) -> tuple:
+    return (_ISO_CHARACTER if is_character else _ISO_PROP) + _ISO_COMMON
+
+# Applied even when the instruction names no style. RENDERING TREATMENT ONLY --
+# and deliberately FANTASY, not photoreal: RealVisXL's prior is photographic, so
+# without "stylized realism / heroic exaggerated proportions" it renders an
+# ordinary man in costume rather than a game character. A/B-verified on the box.
+# every word here must describe how a surface is rendered, never what is around
+# it. Scene nouns ("candle-lit", "weathered stone") reliably beat "plain white
+# background" in the sampler and put the subject back in a room, which is
+# exactly what TRELLIS cannot reconstruct. Verified by A/B render on the box.
 # ponytail: text-level style lock. Upgrade path is IP-Adapter conditioning in
 # sdxl.json if props still diverge in palette after this ships.
-_QUALITY_TAIL = ("highly detailed, intricate surface detail, physically based "
-                 "materials, dramatic directional lighting, painterly")
+_QUALITY_TAIL = ("dark fantasy video game character concept art, heroic "
+                 "exaggerated proportions, stylized realism, cinematic key "
+                 "lighting, highly detailed, intricate surface detail, "
+                 "physically based materials, sharp focus")
 
 
 def _apply_style(tasks, instruction: str) -> None:
-    """Append the run's art direction to every design_2d prompt."""
+    """Append the run's art direction to every design_2d prompt.
+
+    Concept art that feeds a mesh gets the TREATMENT TAIL ONLY. The operator's
+    "Style:" line names a place ("dark candle-lit baroque hall"), and a place
+    beats "plain white background" in the sampler -- the subject comes back
+    sitting in a room and TRELLIS then models the room. Those concepts exist to
+    be clean reconstruction input, not to look like the game; the game's mood
+    comes from the scaffold's lighting. Backdrop art, which no mesh is built
+    from, gets the full style line.
+    """
     m = _STYLE_RE.search(instruction or "")
-    tail = f"{m.group(1).rstrip('.')}, {_QUALITY_TAIL}" if m else _QUALITY_TAIL
+    styled = f"{m.group(1).rstrip('.')}, {_QUALITY_TAIL}" if m else _QUALITY_TAIL
+    feeds_a_mesh = {t["spec"].get("concept_from") for t in tasks
+                    if isinstance(t, dict) and t.get("type") == "design_3d"}
     for t in tasks:
         if not (isinstance(t, dict) and t.get("type") == "design_2d"):
             continue
         p = (t.get("spec", {}).get("prompt") or "").rstrip().rstrip(",")
-        # unconditional: a gate here is how two props in one run end up with
-        # different style tails, which is the divergence this is meant to remove
+        # unconditional within each group: a gate here is how two props in one
+        # run end up with different tails, the divergence this exists to remove
+        tail = _QUALITY_TAIL if t.get("id") in feeds_a_mesh else styled
         t["spec"]["prompt"] = f"{p}, {tail}" if p else tail
 
 
@@ -368,7 +400,8 @@ def repair_task_list(tasks, reference_images: list[str] | None = None,
             # catalogue token, applied to characters as well. Removed: the look
             # now comes from _apply_style, which the operator controls.
             p = c["spec"].get("prompt", "")
-            missing = [cl for cl in _ISO_CLAUSES if cl not in p.lower()]
+            missing = [cl for cl in _iso_clauses(t.get("id") in rig_meshes)
+                       if cl not in p.lower()]
             if missing:
                 c["spec"]["prompt"] = (p.rstrip().rstrip(",") + ", "
                                        + ", ".join(missing))

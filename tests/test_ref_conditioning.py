@@ -111,7 +111,7 @@ def test_prop_concept_isolated_from_scene_ref():
     ]
     repair_task_list(tasks, ["lib.png"])
     assert "ref_image" not in tasks[0]["spec"]
-    assert "single isolated object" in tasks[0]["spec"]["prompt"]
+    assert "isolated on a plain flat white background" in tasks[0]["spec"]["prompt"]
     assert tasks[2]["spec"]["ref_image"] == "lib.png"
     assert "isolated" not in tasks[2]["spec"]["prompt"]
     validate_task_list(tasks)
@@ -167,7 +167,7 @@ def test_router_omissions_repaired():
     assert by["char_mesh"]["spec"]["ref_image"] == refs[0]      # char ref enforced
     assert by["env"]["spec"]["ref_image"] == refs[1]            # env ref on backdrop
     assert "ref_image" not in by["shelf"]["spec"]               # isolation strips it
-    assert "single isolated object" in by["shelf"]["spec"]["prompt"]
+    assert "isolated on a plain flat white background" in by["shelf"]["spec"]["prompt"]
     validate_task_list(tasks)
 
 
@@ -229,16 +229,45 @@ def test_style_tail_is_identical_across_sibling_props():
         {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
     ]
     repair_task_list(tasks, [], "Make a game.\nStyle: dark baroque oil painting\n")
-    from pipeline.decompose import _ISO_CLAUSES
+    from pipeline.decompose import _ISO_COMMON
     for t in tasks:
         if t["type"] != "design_2d":
             continue
         p = t["spec"]["prompt"]
-        assert p.endswith(f"dark baroque oil painting, {_QUALITY_TAIL}"), p
+        # mesh-feeding concepts get the TREATMENT tail only -- the operator's
+        # scene-naming style line would put them back inside a room
+        assert p.endswith(_QUALITY_TAIL), p
+        assert "dark baroque oil painting" not in p, p
         assert "product render" not in p, p
-        # every mesh-feeding concept carries all three isolation clauses, once
-        for cl in _ISO_CLAUSES:
+        for cl in _ISO_COMMON:
             assert p.lower().count(cl) == 1, (cl, p)
+
+
+def test_backdrop_art_keeps_the_operator_style_line():
+    """Art no mesh is built from is the one place the scene style belongs."""
+    from pipeline.decompose import repair_task_list, _QUALITY_TAIL
+    tasks = [{"id": "sky", "type": "design_2d", "depends_on": [],
+              "spec": {"prompt": "a vast library hall backdrop"}},
+             {"id": "build", "type": "assemble", "depends_on": [], "spec": {}}]
+    repair_task_list(tasks, [], "Style: dark baroque oil painting\n")
+    p = tasks[0]["spec"]["prompt"]
+    assert p.endswith(f"dark baroque oil painting, {_QUALITY_TAIL}"), p
+    assert "studio cutout" not in p, p
+
+
+def test_prop_is_not_described_as_standing_head_to_toe():
+    """Character framing on a bookshelf produced nonsense concept art."""
+    from pipeline.decompose import repair_task_list
+    tasks = [{"id": "shelf_art", "type": "design_2d", "depends_on": [],
+              "spec": {"prompt": "a bookshelf"}},
+             {"id": "shelf", "type": "design_3d", "depends_on": ["shelf_art"],
+              "spec": {"prompt": "bookshelf", "concept_from": "shelf_art"}},
+             {"id": "build", "type": "assemble", "depends_on": [], "spec": {}}]
+    repair_task_list(tasks, [], "")
+    p = tasks[0]["spec"]["prompt"].lower()
+    assert "single isolated object" in p, p
+    for bad in ("head to toe", "standing", "full body"):
+        assert bad not in p, (bad, p)
 
 
 def test_quality_tail_applies_without_a_style_line():
