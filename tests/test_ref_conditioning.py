@@ -115,3 +115,20 @@ def test_prop_concept_isolated_from_scene_ref():
     assert tasks[2]["spec"]["ref_image"] == "lib.png"
     assert "isolated" not in tasks[2]["spec"]["prompt"]
     validate_task_list(tasks)
+
+
+def test_coerce_router_wrappers():
+    from pipeline.decompose import _coerce_task_list
+    tasks = [{"id": "a", "type": "code", "spec": {}}]
+    assert _coerce_task_list({"tasks": tasks}) == tasks       # dict wrapper
+    assert _coerce_task_list(tasks[0]) == tasks               # single bare task
+    assert _coerce_task_list(tasks) == tasks                  # already a list
+    assert _coerce_task_list({"a": 1}) == {"a": 1}            # not coercible
+
+
+def test_think_block_stripped():
+    from pipeline.decompose import _THINK_RE
+    raw = '<think>maybe {"id": "x"} hmm</think>\n[{"id": "a"}]'
+    assert _THINK_RE.sub("", raw).strip() == '[{"id": "a"}]'
+    # unterminated think block (token budget ran out) strips to empty
+    assert _THINK_RE.sub("", "<think>endless pondering").strip() == ""

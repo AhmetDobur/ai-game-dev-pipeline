@@ -81,17 +81,36 @@ Game description:
 Reply with ONLY a JSON array of tasks."""
 
 
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
+
+
+def _coerce_task_list(parsed):
+    """R1-style routers wrap the array ({"tasks": [...]}) or emit one bare task."""
+    if isinstance(parsed, dict):
+        lists = [v for v in parsed.values()
+                 if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)]
+        if len(lists) == 1:
+            return lists[0]
+        if "id" in parsed and "type" in parsed:
+            return [parsed]
+    return parsed
+
+
 def decompose(router: LlamaServer, instruction: str, reference_images: list[str],
               temperature: float = 0.6, max_tokens: int = 4096, on_token=None) -> list[dict]:
     ref_note = ", ".join(reference_images) if reference_images else "none"
     prompt = DECOMPOSE_PROMPT.format(instruction=instruction, ref_note=ref_note)
     messages = [{"role": "user", "content": prompt}]
-    last_err = None
+    last_err, reply = None, ""
     for _ in range(3):  # a small router gets structure wrong; feed the error back
-        reply = router.chat(messages, temperature=temperature,
-                            max_tokens=max_tokens, on_token=on_token)
+        raw = router.chat(messages, temperature=temperature,
+                          max_tokens=max_tokens, on_token=on_token)
+        # an R1 distill precedes its answer with a <think> block whose example
+        # snippets parse as JSON and hijack extraction — strip before parsing,
+        # and never echo the block back on retry (it only breeds more thinking)
+        reply = _THINK_RE.sub("", raw).strip() or raw
         try:
-            tasks = extract_json(reply)
+            tasks = _coerce_task_list(extract_json(reply))
             repair_task_list(tasks, reference_images)
             validate_task_list(tasks)
             return tasks
@@ -101,7 +120,8 @@ def decompose(router: LlamaServer, instruction: str, reference_images: list[str]
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": f"That task list is invalid: {e}. "
                  "Reply with ONLY the corrected full JSON array."}]
-    raise ValueError(f"decomposition failed after 3 attempts: {last_err}")
+    raise ValueError(f"decomposition failed after 3 attempts: {last_err}; "
+                     f"last reply tail: {reply[-500:]!r}")
 
 
 PATCH_PROMPT = """You are patching an EXISTING game. Do NOT rebuild what the change
