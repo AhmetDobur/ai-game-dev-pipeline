@@ -523,3 +523,56 @@ def test_unreadable_model_is_never_rejected(tmp_path):
     junk.write_bytes(b"not a glb at all")
     assert has_skin(junk) is None
     assert rig_verdict(junk)[0]
+
+
+def test_keyboard_seat_can_walk_not_only_sprint():
+    """Input.get_vector always returns magnitude 1.0 for a key press, so a
+    stick-throw run test applied to keyboard input made the seat sprint
+    permanently and put the walk animation out of reach."""
+    gd = Path("templates/player.gd").read_text()
+    body = gd.split("func _physics_process")[1]
+    # the run test is computed from the STICK only, before the keyboard fallback
+    assert "var running := stick.length() > RUN_STICK" in body
+    assert "running = Input.is_key_pressed(KEY_SHIFT if device == 0 else KEY_CTRL)" in body
+    assert "move.length()" not in body      # never re-derived from merged input
+
+
+def test_second_seat_has_its_own_keyboard_bindings():
+    """Split-screen must be playable on one keyboard: the arrows used to be
+    aliases of WASD, so they drove seat 1 and seat 2 had no binding at all."""
+    from pipeline.scaffold import _KEYS
+    for a in ("move_left", "move_right", "move_forward", "move_back"):
+        assert a in _KEYS and f"p2_{a}" in _KEYS
+        assert _KEYS[a] != _KEYS[f"p2_{a}"]
+    for a in ("p2_look_left", "p2_look_right", "p2_look_up", "p2_look_down"):
+        assert a in _KEYS
+    assert len(set(_KEYS.values())) == len(_KEYS)   # no key drives two actions
+
+
+def test_camera_hangs_off_a_spring_arm():
+    """A fixed 3.5 m boom buries the camera under the floor slab past ~35 deg of
+    pitch and sweeps it through walls and columns."""
+    from pipeline.scaffold import _world_tscn
+    for chars in (["res://a/character.glb"], ["res://a/c.glb", "res://b/c.glb"]):
+        scene = _world_tscn("res://scripts/player.gd", chars, [])
+        assert scene.count('type="SpringArm3D"') == len(chars)
+        assert "spring_length = 3.5" in scene
+        assert 'parent="Player/CamPivot"' in scene or 'parent="Player1/CamPivot"' in scene
+
+
+def test_apse_stair_is_climbable_and_not_inside_the_platform():
+    """Two of the three steps used to sit inside the Apse block, and a 0.35 m
+    riser is a wall to a CharacterBody3D."""
+    import re
+    from pipeline.scaffold import _world_tscn, HALL_L
+    scene = _world_tscn(None, [], [])
+    zs = {}
+    for name in ("Step0", "Step1", "Step2", "Apse"):
+        m = re.search(rf'\[node name="{name}" type="StaticBody3D"[^\n]*\]\n'
+                      r"transform = Transform3D\([^)]*?([-\d.]+)\)", scene)
+        assert m, name
+        zs[name] = float(m.group(1))
+    apse_front = zs["Apse"] - 2.0
+    assert zs["Step2"] + 0.6 <= apse_front + 1e-6, "top step is inside the apse"
+    assert zs["Step0"] < zs["Step1"] < zs["Step2"], "steps out of order"
+    assert "StairRamp" in scene, "no walkable ramp over the risers"

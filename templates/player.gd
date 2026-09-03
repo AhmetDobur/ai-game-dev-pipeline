@@ -5,7 +5,8 @@ extends CharacterBody3D
 
 ## Gamepad this player reads. Two pads on one PC drive two players without any
 ## per-player input actions -- Godot addresses joypads by device index directly.
-## Device 0 also accepts the keyboard, so the game is playable with no pad at all.
+## Every seat also has a keyboard fallback, so split-screen is playable on one
+## keyboard when a pad is missing: seat 0 is WASD+mouse, seat 1 is arrows+IJKL.
 @export var device: int = 0
 ## Camera to drive. In split-screen the camera lives inside this player's
 ## SubViewport and therefore CANNOT be a child of the player, so its transform is
@@ -13,23 +14,34 @@ extends CharacterBody3D
 @export var camera_path: NodePath
 
 const SPEED := 4.5
+const RUN_SPEED := 8.0
 const LOOK_SPEED := 2.5
+const KEY_LOOK_SPEED := 2.0
 const STICK_DEADZONE := 0.2
+const RUN_STICK := 0.75        # push the stick past this and the character runs
 const GRAVITY := 18.0
 const PITCH_LIMIT := 1.2
-const CAM_OFFSET := Vector3(0, 0.4, 3.5)
 const MOUSE_SENS := 0.0022
-const RUN_SPEED := 8.0
-const RUN_STICK := 0.75        # push the stick past this and the character runs
 
 @onready var _pivot: Node3D = $CamPivot
+@onready var _spring: SpringArm3D = $CamPivot/SpringArm3D
+@onready var _mount: Node3D = $CamPivot/SpringArm3D/CamMount
 @onready var _camera: Camera3D = get_node_or_null(camera_path) as Camera3D
 
 var _anim: AnimationPlayer = null
 var _clip := ""
+var _keyboard := true
 
 
 func _ready() -> void:
+	# without this the boom would sweep through the level: looking up past ~35
+	# degrees buries a fixed 3.5 m camera under the floor slab, and turning near
+	# a wall pushes it through the masonry
+	_spring.add_excluded_object(get_rid())
+	_refresh_seat()
+	Input.joy_connection_changed.connect(func(_d, _c): _refresh_seat())
+	if device == 0:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	# the rigged character.glb carries idle/walk/run as named animations; without
 	# this the character slides through the hall frozen in its rest pose
 	_anim = find_child("AnimationPlayer", true, false)
@@ -37,10 +49,11 @@ func _ready() -> void:
 		for a in _anim.get_animation_list():
 			_anim.get_animation(a).loop_mode = Animation.LOOP_LINEAR
 
-	# Player 1 is the keyboard+mouse seat. Without this the game is walk-only:
-	# WASD moves but nothing turns, so you can never look at the room you are in.
-	if device == 0:
-		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _refresh_seat() -> void:
+	# seat 0 is always keyboard-capable; seat 1 falls back to keys only while no
+	# pad is plugged in for it
+	_keyboard = device == 0 or not (device in Input.get_connected_joypads())
 
 
 func _input(event: InputEvent) -> void:
@@ -52,8 +65,7 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion \
 			and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * MOUSE_SENS)
-		_pivot.rotation.x = clampf(_pivot.rotation.x - event.relative.y * MOUSE_SENS,
-				-PITCH_LIMIT, PITCH_LIMIT)
+		_pitch(-event.relative.y * MOUSE_SENS)
 	elif event.is_action_pressed("ui_cancel"):
 		# Esc releases the cursor -- otherwise a windowed build traps the mouse
 		# with no way to reach the close button.
@@ -61,6 +73,10 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed \
 			and Input.get_mouse_mode() == Input.MOUSE_MODE_VISIBLE:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+
+func _pitch(delta_x: float) -> void:
+	_pivot.rotation.x = clampf(_pivot.rotation.x + delta_x, -PITCH_LIMIT, PITCH_LIMIT)
 
 
 func _play(clip: String) -> void:
@@ -76,26 +92,35 @@ func _stick(axis_x: int, axis_y: int) -> Vector2:
 	return Vector2.ZERO if v.length() < STICK_DEADZONE else v
 
 
-func _physics_process(delta: float) -> void:
-	var look := _stick(JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y)
-	rotate_y(-look.x * LOOK_SPEED * delta)
-	_pivot.rotation.x = clampf(_pivot.rotation.x - look.y * LOOK_SPEED * delta,
-			-PITCH_LIMIT, PITCH_LIMIT)
+func _keys(prefix: String, a: String, b: String, c: String, d: String) -> Vector2:
+	return Input.get_vector(prefix + a, prefix + b, prefix + c, prefix + d)
 
-	var move := _stick(JOY_AXIS_LEFT_X, JOY_AXIS_LEFT_Y)
-	if device == 0 and move == Vector2.ZERO:
-		move = Input.get_vector("move_left", "move_right",
-				"move_forward", "move_back")
-	# run on a hard stick push, or Shift for the keyboard seat
-	var running := move.length() > RUN_STICK \
-			or (device == 0 and Input.is_key_pressed(KEY_SHIFT))
-	var speed := RUN_SPEED if running else SPEED
+
+func _physics_process(delta: float) -> void:
+	var prefix := "" if device == 0 else "p2_"
+
+	var look := _stick(JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y)
+	if look == Vector2.ZERO and _keyboard and device != 0:
+		look = _keys(prefix, "look_left", "look_right", "look_up", "look_down") \
+				* (KEY_LOOK_SPEED / LOOK_SPEED)
+	rotate_y(-look.x * LOOK_SPEED * delta)
+	_pitch(-look.y * LOOK_SPEED * delta)
+
+	# Run is a STICK-THROW test, so it may only be applied to stick input:
+	# Input.get_vector always returns magnitude 1.0 for a key press, which made
+	# the keyboard seat sprint permanently and put walk speed out of reach.
+	var stick := _stick(JOY_AXIS_LEFT_X, JOY_AXIS_LEFT_Y)
+	var move := stick
+	var running := stick.length() > RUN_STICK
+	if move == Vector2.ZERO and _keyboard:
+		move = _keys(prefix, "move_left", "move_right", "move_forward", "move_back")
+		running = Input.is_key_pressed(KEY_SHIFT if device == 0 else KEY_CTRL)
 
 	var dir := (transform.basis * Vector3(move.x, 0.0, move.y))
 	dir.y = 0.0
 	dir = dir.normalized() if dir.length() > 0.001 else Vector3.ZERO
-	velocity.x = dir.x * speed
-	velocity.z = dir.z * speed
+	velocity.x = dir.x * (RUN_SPEED if running else SPEED)
+	velocity.z = dir.z * (RUN_SPEED if running else SPEED)
 	velocity.y = 0.0 if is_on_floor() else velocity.y - GRAVITY * delta
 	move_and_slide()
 
@@ -104,5 +129,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		_play("run" if running else "walk")
 
+	# the camera renders inside a SubViewport, so it cannot be a child of the
+	# player; carry the spring arm's collision-corrected tip across every frame
 	if _camera:
-		_camera.global_transform = _pivot.global_transform.translated_local(CAM_OFFSET)
+		_camera.global_transform = _mount.global_transform

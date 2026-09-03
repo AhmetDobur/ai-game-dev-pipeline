@@ -9,9 +9,15 @@ import math
 import shutil
 from pathlib import Path
 
-# physical keycodes: WASD + arrows
-_KEYS = {"move_left": (65, 4194319), "move_right": (68, 4194321),
-         "move_forward": (87, 4194320), "move_back": (83, 4194322)}
+# physical keycodes. Seat 1 gets WASD (+ the mouse), seat 2 gets the arrows to
+# move and IJKL to look -- split-screen has to be playable on one keyboard when
+# only one gamepad is plugged in, and the arrows used to be mere aliases of WASD
+# so they drove seat 1 and left seat 2 with no binding at all.
+_KEYS = {"move_left": 65, "move_right": 68, "move_forward": 87, "move_back": 83,
+         "p2_move_left": 4194319, "p2_move_right": 4194321,
+         "p2_move_forward": 4194320, "p2_move_back": 4194322,
+         "p2_look_left": 74, "p2_look_right": 76,
+         "p2_look_up": 73, "p2_look_down": 75}
 
 PROJECT_GODOT = """config_version=5
 
@@ -23,6 +29,11 @@ run/main_scene="res://scenes/world.tscn"
 [input]
 
 {input_map}
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
 [rendering]
 
 renderer/rendering_method="forward_plus"
@@ -31,7 +42,6 @@ renderer/rendering_method="forward_plus"
 _ACTION = """{name}={{
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"physical_keycode":{a},"pressed":false,"echo":false,"script":null)
-, Object(InputEventKey,"physical_keycode":{b},"pressed":false,"echo":false,"script":null)
 ]
 }}
 """
@@ -133,6 +143,28 @@ def _column(name: str, x: float, z: float, mat_id: str, sub: list) -> str:
             f'shape = SubResource("{name}_s")')
 
 
+def _ramp(name: str, width: float, z0: float, z1: float, top: float, sub) -> str:
+    """Collision-only slope from floor level at z0 up to `top` at z1.
+
+    No mesh: this exists purely so a body can walk up geometry that is drawn as
+    steps. Thin, and sunk by its own half-thickness so its upper face meets the
+    step noses rather than floating above them.
+    """
+    run = z1 - z0
+    length = math.hypot(run, top)
+    angle = -math.atan2(top, run)        # -X rotation lifts the +Z end
+    c, sn = round(math.cos(angle), 6), round(math.sin(angle), 6)
+    t = 0.2
+    cz, cy = (z0 + z1) / 2, top / 2 - t / 2
+    sub.append(f'[sub_resource type="BoxShape3D" id="{name}_s"]\n'
+               f"size = Vector3({round(width, 3)}, {t}, {round(length, 3)})")
+    return (f'[node name="{name}" type="StaticBody3D" parent="."]\n'
+            f"transform = Transform3D(1, 0, 0, 0, {c}, {sn}, 0, {-sn}, {c}, "
+            f"0, {round(cy, 3)}, {round(cz, 3)})\n\n"
+            f'[node name="{name}Col" type="CollisionShape3D" parent="{name}"]\n'
+            f'shape = SubResource("{name}_s")')
+
+
 def _hall_geometry(pal: dict, sub: list) -> list:
     """Floor, carpet, four walls, ceiling, colonnade, apse steps, rose window."""
     hw, hl = HALL_W / 2, HALL_L / 2
@@ -157,11 +189,24 @@ def _hall_geometry(pal: dict, sub: list) -> list:
         _box_body("WallFront", (HALL_W, HALL_H, _WALL_T), (0, HALL_H / 2, -hl), "mat_wood", sub),
         _box_body("Ceiling", (HALL_W, 0.4, HALL_L), (0, HALL_H, 0), "mat_dark", sub),
     ]
-    # raised apse at the far end: three steps up to a platform
+    # raised apse at the far end: three steps up to a platform. The run ENDS at
+    # the platform's front face -- it used to start 5.5 m out and march into the
+    # apse, so the middle step was half swallowed and the top step sat entirely
+    # inside the block, leaving a single 0.7 m wall where a stair was drawn.
+    apse_d, apse_h, step_d, step_h = 4.0, 1.05, 1.2, 0.35
+    apse_front = hl - 2.4 - apse_d / 2
+    stair_front = apse_front - 3 * step_d
     for i in range(3):
-        n.append(_box_body(f"Step{i}", (HALL_W - 4, 0.35, 1.2),
-                           (0, 0.17 + i * 0.35, hl - 5.5 + i * 1.2), "mat_floor", sub))
-    n.append(_box_body("Apse", (HALL_W - 4, 1.05, 4.0), (0, 0.52, hl - 2.4), "mat_floor", sub))
+        n.append(_box_body(f"Step{i}", (HALL_W - 4, step_h, step_d),
+                           (0, step_h / 2 + i * step_h,
+                            stair_front + step_d * (i + 0.5)), "mat_floor", sub))
+    n.append(_box_body("Apse", (HALL_W - 4, apse_h, apse_d),
+                       (0, apse_h / 2, hl - 2.4), "mat_floor", sub))
+    # Godot 4's CharacterBody3D has no step-up: a 0.35 m riser reads as a wall
+    # and the whole apse end -- the rose window, the part worth walking to -- was
+    # unreachable. An invisible ramp over the stair makes it walkable without
+    # touching how the stair looks.
+    n.append(_ramp("StairRamp", HALL_W - 4, stair_front, apse_front, apse_h, sub))
     n.append(_box_body("RoseWindow", (5.0, 5.0, 0.2), (0, 7.5, hl - 0.4), "mat_glass", sub))
     # colonnade down both sides
     for i in range(6):
@@ -238,10 +283,16 @@ shape = SubResource("player_shape")
 
 [node name="CamPivot" type="Node3D" parent="{name}"]
 position = Vector3(0, 1.6, 0)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="{name}/CamPivot"]
+position = Vector3(0, 0.4, 0)
+spring_length = 3.5
+margin = 0.2
+
+[node name="CamMount" type="Marker3D" parent="{name}/CamPivot/SpringArm3D"]
 {mesh}""")
         if not split:
-            out.append(f"""[node name="Camera3D" type="Camera3D" parent="{name}/CamPivot"]
-position = Vector3(0, 0.4, 3.5)""")
+            out.append(f"""[node name="Camera3D" type="Camera3D" parent="{name}/CamPivot/SpringArm3D/CamMount"]""")
     if not split:
         return "\n\n".join(out)
 
@@ -424,7 +475,7 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
             usable = True
     player_script = "res://scripts/player.gd" if usable else None
 
-    input_map = "".join(_ACTION.format(name=n, a=a, b=b) for n, (a, b) in _KEYS.items())
+    input_map = "".join(_ACTION.format(name=n, a=a) for n, a in _KEYS.items())
     (game_dir / "scenes").mkdir(exist_ok=True)
     (game_dir / "project.godot").write_text(
         PROJECT_GODOT.format(title=title.replace('"', ""), input_map=input_map),
