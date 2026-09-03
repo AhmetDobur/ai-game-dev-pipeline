@@ -217,16 +217,20 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
         if i < len(char_glbs):
             mid = ext_res("PackedScene", char_glbs[i])
             mesh = f'\n[node name="Mesh" parent="{name}" instance=ExtResource("{mid}")]'
+        # CamPivot is emitted BEFORE the mesh instance on purpose: a .glb that
+        # fails to load raises a parse error that drops every node after it in
+        # the file, and losing the pivot means the player cannot look or aim.
+        # Movement must survive a missing asset.
         out.append(f"""[node name="{name}" type="CharacterBody3D" parent="."]
 position = Vector3({round(x, 2)}, 1.2, {SPAWN_Z})
 {script}
 [node name="Collision" type="CollisionShape3D" parent="{name}"]
 position = Vector3(0, 0.9, 0)
 shape = SubResource("player_shape")
-{mesh}
 
 [node name="CamPivot" type="Node3D" parent="{name}"]
-position = Vector3(0, 1.6, 0)""")
+position = Vector3(0, 1.6, 0)
+{mesh}""")
         if not split:
             out.append(f"""[node name="Camera3D" type="Camera3D" parent="{name}/CamPivot"]
 position = Vector3(0, 0.4, 3.5)""")
