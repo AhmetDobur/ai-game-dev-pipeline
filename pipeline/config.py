@@ -38,7 +38,9 @@ DEFAULTS: dict = {
         "sdxl_workflow": "workflows/sdxl.json",
         "sdxl_img2img_workflow": "workflows/sdxl_img2img.json",
         "trellis_workflow": "workflows/trellis.json",
-        "timeout_s": 600,
+        # a TRELLIS mesh measures ~55 min at 32-cubed on a Titan RTX, so anything
+        # under an hour times out every character the pipeline ever builds
+        "timeout_s": 5400,
     },
     "tts": {
         "url": "http://127.0.0.1:5005",      # Orpheus-FastAPI
