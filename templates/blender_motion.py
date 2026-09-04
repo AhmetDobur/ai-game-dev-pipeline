@@ -331,6 +331,15 @@ def find_cmu_clip(cmu_dir, clip):
             if trial in paths and any(re.search(rf"\b{re.escape(w)}", desc) for w in words)]
     if not hits:
         return None
+    # A cyclic clip needs a source long enough to contain a whole stride with
+    # room to pick the best one. CMU's run/jog matches include 0.8-second
+    # fragments, and the highest-subject-first rule happily returned one of
+    # those as "run", leaving a 25-frame loop.
+    if is_cyclic(clip):
+        long_enough = [t for t in hits
+                       if bvh_frames(paths[t]) >= _MIN_CYCLIC_SECONDS
+                       * bvh_fps(paths[t])]
+        hits = long_enough or hits
     hits.sort(key=lambda t: (-int(t.split("_")[0]), int(t.split("_")[1])))
     # spread variants across SUBJECTS first: two clips from one performer in one
     # session look like the same move twice, which is the thing to avoid here
@@ -364,6 +373,18 @@ def _bvh_paths(cmu_dir):
             if f.lower().endswith(".bvh"):
                 out.setdefault(os.path.splitext(f)[0], os.path.join(base, f))
     return out
+
+
+def bvh_frames(bvh_path):
+    """Frame count from the BVH header, without importing the file."""
+    try:
+        with open(bvh_path, errors="replace") as fh:
+            for line in fh:
+                if line.strip().lower().startswith("frames:"):
+                    return int(line.split(":", 1)[1])
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
 
 
 def bvh_fps(bvh_path, default=FPS):
@@ -539,6 +560,9 @@ _CYCLIC = ("idle", "walk", "run", "jog")
 _ONESHOT_SECONDS = 2.5      # a punch is not twelve seconds long
 _SMOOTH_RADIUS = 2          # +/- 2 frames: kills jitter, keeps the snap
 _BLEND_FRACTION = 0.25      # tail cross-faded back into the head
+_MIN_CYCLIC_SECONDS = 3.0   # a walk/run source shorter than this is a fragment
+_BREATH_SECONDS = 4.3       # ~14 breaths a minute, resting
+_BREATH_INHALE = 0.4        # in is quicker than out, which is what reads as alive
 
 
 def is_cyclic(clip_name):
@@ -599,6 +623,18 @@ def clip_window(track, clip_name, n):
     """
     if n <= 1:
         return 0, max(0, n - 1)
+    if str(clip_name).lower().split("_")[0] == "idle":
+        # An idle is not a gait. The period detector finds a half-second twitch
+        # in a standing trial and loops that, which is the fidget the character
+        # was doing rather than the character standing. Take one BREATH instead,
+        # from the calmest stretch of the trial, and let breathe() carry it.
+        span = min(n - 1, int(_BREATH_SECONDS * FPS))
+        best_a, best_e = 0, float("inf")
+        for a in range(0, max(1, n - span), max(1, span // 8)):
+            e = _motion_energy(track, a, a + span)
+            if e < best_e:
+                best_a, best_e = a, e
+        return best_a, best_a + span
     if is_cyclic(clip_name):
         period = _gait_period(track, n)
         if period:
@@ -615,6 +651,47 @@ def clip_window(track, clip_name, n):
         if e > best_e:
             best_a, best_e = a, e
     return best_a, best_a + span
+
+
+def breath_phase(u):
+    """0 at rest, 1 at full inhale, back to 0, over one normalised cycle.
+
+    Asymmetric on purpose: a resting breath draws in over about four tenths of
+    the cycle and lets out over the rest. A symmetric sine reads as a pump.
+    Both halves are raised cosines, so the ends meet and the clip still loops.
+    """
+    u = u % 1.0
+    if u < _BREATH_INHALE:
+        return 0.5 - 0.5 * math.cos(math.pi * u / _BREATH_INHALE)
+    return 0.5 + 0.5 * math.cos(math.pi * (u - _BREATH_INHALE) / (1 - _BREATH_INHALE))
+
+
+# Which bones carry a breath, and how much. The chest leads, the neck and head
+# counter-rotate so the gaze stays level instead of nodding along with the
+# ribcage, and the shoulders ride a fraction of the chest.
+_BREATH_BONES = {"Spine": 1.0, "Spine1": 0.75, "Neck": -0.45, "Head": -0.25,
+                 "LeftShoulder": 0.3, "RightShoulder": 0.3}
+
+
+def breathe(track, amp=0.05):
+    """Lay a breathing cycle over a standing clip, in place.
+
+    Mocap of somebody standing still already contains their breathing, but the
+    clip is a few seconds cut out of a longer trial and smoothed, and what
+    survives is too small and too irregular to read on a game character. This
+    adds one clean, loopable breath on top of whatever the performer was doing.
+    """
+    n = len(next(iter(track.values()), []))
+    if n < 2:
+        return
+    for name, weight in _BREATH_BONES.items():
+        quats = track.get(name)
+        if not quats:
+            continue
+        for i in range(n):
+            a = amp * weight * breath_phase(i / n)
+            cls = type(quats[i])
+            quats[i] = quats[i] @ cls((math.cos(a / 2), math.sin(a / 2), 0.0, 0.0))
 
 
 def smooth_quats(quats, radius=_SMOOTH_RADIUS):
@@ -713,6 +790,8 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             a, b = clip_window(track, clip_name, n)
         for tname, quats in track.items():
             track[tname] = smooth_quats(quats[a:b + 1])
+        if str(clip_name).lower().split("_")[0] == "idle":
+            breathe(track)
         if is_cyclic(clip_name):
             loop_blend(track)
 

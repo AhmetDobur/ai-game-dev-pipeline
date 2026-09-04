@@ -23,6 +23,13 @@ class _Q:
     def dot(self, o):
         return self.w * o.w + self.x * o.x + self.y * o.y + self.z * o.z
 
+    def __matmul__(self, o):
+        """Hamilton product — mathutils spells composition this way."""
+        return _Q((self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
+                   self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
+                   self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
+                   self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w))
+
     def __neg__(self):
         return _Q((-self.w, -self.x, -self.y, -self.z))
 
@@ -152,3 +159,40 @@ def test_a_bare_mesh_is_not_required_to_have_a_skin(tmp_path):
     src = inspect.getsource(validate.validate)
     d3 = src[src.index('if kind == "design_3d"'):src.index('if kind == "rig_animate"')]
     assert "_validate_rigs" not in d3, "design_3d must not demand a skeleton binding"
+
+
+def test_breath_phase_is_asymmetric_and_loops(motion):
+    assert motion.breath_phase(0.0) == pytest.approx(0.0, abs=1e-9)
+    assert motion.breath_phase(1.0) == pytest.approx(0.0, abs=1e-9)
+    assert motion.breath_phase(motion._BREATH_INHALE) == pytest.approx(1.0, abs=1e-9)
+    # in is quicker than out: the peak sits before the midpoint of the cycle
+    peak = max((motion.breath_phase(i / 400) , i / 400) for i in range(400))[1]
+    assert peak < 0.5
+    # monotone rise then monotone fall, so it reads as one breath not a flutter
+    rise = [motion.breath_phase(u / 100 * motion._BREATH_INHALE) for u in range(101)]
+    assert rise == sorted(rise)
+
+
+def test_breathing_moves_the_chest_and_counter_rotates_the_neck(motion):
+    n = 60
+    track = {b: [_Q() for _ in range(n)] for b in
+             ("Spine", "Spine1", "Neck", "Head", "LeftShoulder", "LeftArm")}
+    motion.breathe(track, amp=0.05)
+    top = int(n * motion._BREATH_INHALE)
+    assert track["Spine"][top].x > 0.0            # chest opens at full inhale
+    assert track["Neck"][top].x < 0.0             # neck holds the gaze level
+    assert track["LeftArm"][top].x == 0.0         # arms are not part of a breath
+    # rest frames stay put, so the loop still closes
+    assert track["Spine"][0].x == pytest.approx(0.0, abs=1e-9)
+
+
+def test_an_idle_window_is_one_breath_from_the_calmest_stretch(motion):
+    n = 400
+    # busy for the first half, still for the second
+    # real, normalised rotations: an unnormalised quaternion gives dot > 1, so
+    # 1 - |dot| goes negative and the busiest window scores as the calmest
+    track = {"Hips": [_rot(0.3 * math.sin(i / 3.0) if i < 200 else 0.0)
+                      for i in range(n)]}
+    a, b = motion.clip_window(track, "idle", n)
+    assert b - a == pytest.approx(motion._BREATH_SECONDS * motion.FPS, abs=1)
+    assert a >= 190, "picked the fidgety half of the trial"
