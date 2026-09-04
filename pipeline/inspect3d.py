@@ -14,6 +14,7 @@ from pathlib import Path
 # the meshes on the box were these. A genuinely flat PROP (a door, a rug) still
 # measures ~0.13 at its thinnest, so 0.05 separates broken from legitimately
 # thin with a wide margin on both sides.
+MIN_STANDING_SLENDERNESS = 2.0  # height / width of a whole standing figure
 MIN_RELATIVE_THICKNESS = 0.05
 
 
@@ -26,7 +27,7 @@ def metrics_for(mesh: Path) -> dict | None:
         return None
 
 
-def verdict(mesh: Path) -> tuple[bool, str]:
+def verdict(mesh: Path, humanoid: bool = False) -> tuple[bool, str]:
     m = metrics_for(mesh)
     if not m:
         return True, "no metrics"          # absence of evidence is not a failure
@@ -37,6 +38,19 @@ def verdict(mesh: Path) -> tuple[bool, str]:
             return False, (f"{Path(mesh).name}: degenerate mesh — thinnest extent is "
                            f"{thin:.1%} of the longest (bbox {bbox}). TRELLIS returned "
                            f"a flat plane, not a solid.")
+    # A standing figure is at least twice as tall as it is wide. Anything
+    # squatter is a truncated reconstruction: the remesher used to drop every
+    # connected component under 1% of the mesh, and at these voxel resolutions
+    # a neck and a pair of wrists are exactly that thin -- four characters came
+    # back as a robe and one boot, cut flat at the chest, and passed every check
+    # because 200k triangles of skirt weigh the same as 200k triangles of hero.
+    if humanoid and len(bbox) == 3 and max(bbox) > 0:
+        slender = max(bbox) / max(sorted(bbox)[1], 1e-6)
+        if slender < MIN_STANDING_SLENDERNESS:
+            return False, (f"{Path(mesh).name}: truncated figure -- only "
+                           f"{slender:.2f}x taller than wide (bbox {bbox}); a whole "
+                           f"standing character is at least "
+                           f"{MIN_STANDING_SLENDERNESS}x. Head, arms or legs are missing.")
     return True, "mesh ok"
 
 

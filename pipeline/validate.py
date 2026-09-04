@@ -29,13 +29,13 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
         # 200k-triangle characters three times each, discarding about twelve
         # hours of GPU time, because the meshes were exactly what they should be.
         # Skinning is the rig_animate stage's contract, checked below.
-        return _validate_geometry(output_paths)
+        return _validate_geometry(output_paths, _is_humanoid(task))
     if kind == "rig_animate":
         ok, detail = _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES,
                                      "animated model")
         if not ok:
             return ok, detail
-        ok, detail = _validate_geometry(output_paths)
+        ok, detail = _validate_geometry(output_paths, _is_humanoid(task))
         return (ok, detail) if not ok else _validate_rigs(output_paths)
     if kind == "audio":
         return _validate_audio(output_paths)
@@ -73,12 +73,21 @@ def _validate_rigs(paths) -> tuple[bool, str]:
     return True, ""
 
 
-def _validate_geometry(paths: list[Path]) -> tuple[bool, str]:
+def _is_humanoid(task: dict) -> bool:
+    """Shape checks that only hold for a standing figure need to know it is one."""
+    plan = (task.get("spec") or {}).get("body_plan")
+    if plan:
+        return "humanoid" in str(plan).lower()
+    text = f'{task.get("id", "")} {(task.get("spec") or {}).get("prompt", "")}'.lower()
+    return any(w in text for w in ("character", "hero", "fighter", "villain", "player"))
+
+
+def _validate_geometry(paths: list[Path], humanoid: bool = False) -> tuple[bool, str]:
     """Byte count says nothing about shape: a flat plane still weighs 8 MB."""
     from .inspect3d import verdict
     for p in paths:
         if p.suffix.lower() in (".glb", ".gltf"):
-            ok, detail = verdict(p)
+            ok, detail = verdict(p, humanoid)
             if not ok:
                 return False, detail
     return True, "geometry ok"

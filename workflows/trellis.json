@@ -319,7 +319,7 @@
       "project_back": 0.0,
       "fix_poles": true,
       "smooth_iters": 3,
-      "drop_small_components": 0.01,
+      "drop_small_components": 0.0,
       "precluster_max_verts": 20000000,
       "mesh": [
         "19",
