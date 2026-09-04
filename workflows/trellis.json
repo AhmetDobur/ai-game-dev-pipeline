@@ -191,7 +191,7 @@
   "17": {
     "class_type": "Trellis2UpsampleStage",
     "inputs": {
-      "target_resolution": 1536,
+      "target_resolution": 2048,
       "positive": [
         "15",
         0
@@ -314,7 +314,7 @@
   "23": {
     "class_type": "RemeshMesh",
     "inputs": {
-      "resolution": 768,
+      "resolution": 1024,
       "band": 1.0,
       "project_back": 0.0,
       "fix_poles": true,
@@ -334,7 +334,7 @@
   "24": {
     "class_type": "DecimateMesh",
     "inputs": {
-      "target_face_count": 40000,
+      "target_face_count": 200000,
       "mesh": [
         "23",
         0
@@ -368,7 +368,7 @@
   "27": {
     "class_type": "BakeTextureFromVoxel",
     "inputs": {
-      "texture_size": 2048,
+      "texture_size": 4096,
       "mesh": [
         "26",
         0
