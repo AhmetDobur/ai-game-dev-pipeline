@@ -187,7 +187,10 @@ def build_executors(cfg: dict, workspace: Path,
             # workflow whose {{image}} placeholder was never substituted
             raise ValueError("design_3d has no usable image: ref_image missing "
                              "from disk and no concept_from linked")
-        outputs = comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir)
+        # a retry must not recompute the identical mesh -- vary the sample per
+        # attempt so "try again" is actually another roll of the figure
+        outputs = comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir,
+                                     seed_offset=int(task.get("attempts", 0)) * 1009)
         for p in outputs:
             if p.suffix.lower() in (".glb", ".gltf"):
                 motion.render_preview(p)  # PNG beside the mesh: SEE what was made

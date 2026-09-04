@@ -14,17 +14,32 @@ class ComfyClient:
         self.timeout_s = timeout_s
 
     def run_workflow(self, workflow_path: str | Path, substitutions: dict[str, str],
-                     out_dir: Path) -> list[Path]:
+                     out_dir: Path, seed_offset: int = 0) -> list[Path]:
         """Load a workflow JSON, substitute {{placeholders}}, run, download outputs.
         A substitution value that is an existing local file (e.g. the concept image
         for TRELLIS) is uploaded first — LoadImage only accepts files in ComfyUI's
-        own input dir, never absolute paths."""
+        own input dir, never absolute paths.
+
+        `seed_offset` shifts every sampler seed in the graph. The workflows carry
+        fixed seeds, so without it a re-run reproduces the previous mesh exactly:
+        a retry could recover from a timeout but could never produce a better
+        figure, and asking for another attempt at a bad mesh was pure waste.
+        Offset 0 leaves the workflow untouched, so a first attempt stays
+        reproducible and only genuine retries explore a different sample."""
         text = Path(workflow_path).read_text(encoding="utf-8")
         for key, value in substitutions.items():
             if value and Path(value).is_file():
                 value = self.upload_image(Path(value))
             text = text.replace("{{" + key + "}}", json.dumps(value)[1:-1])  # json-escape
         workflow = json.loads(text)
+        if seed_offset:
+            for node in workflow.values():
+                inputs = node.get("inputs", {})
+                # relative offset, not a fresh random seed: the stages of a
+                # TRELLIS graph are tuned against each other and should move
+                # together rather than be independently rerolled
+                if isinstance(inputs.get("seed"), int):
+                    inputs["seed"] = (inputs["seed"] + seed_offset) % (2 ** 31)
 
         client_id = uuid.uuid4().hex
         r = requests.post(f"{self.url}/prompt",

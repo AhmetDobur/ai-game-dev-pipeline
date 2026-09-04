@@ -110,3 +110,36 @@ def test_loop_blend_closes_a_cyclic_clip(motion):
 def test_only_locomotion_counts_as_cyclic(motion):
     assert motion.is_cyclic("walk") and motion.is_cyclic("run_2")
     assert not motion.is_cyclic("punch_1") and not motion.is_cyclic("getup_1")
+
+
+def test_seed_offset_changes_every_sampler_but_leaves_attempt_zero_alone(tmp_path):
+    """Fixed workflow seeds made every retry reproduce the same mesh exactly."""
+    import json
+    from pipeline.adapters.comfy import ComfyClient
+
+    wf = tmp_path / "w.json"
+    wf.write_text(json.dumps({
+        "1": {"class_type": "KSampler", "inputs": {"seed": 56, "steps": 28}},
+        "2": {"class_type": "KSampler", "inputs": {"seed": 42}},
+        "3": {"class_type": "LoadImage", "inputs": {"image": "x.png"}},
+    }))
+    seen = {}
+
+    class _Stub(ComfyClient):
+        def _submit(self, workflow):        # capture instead of calling ComfyUI
+            seen.update(workflow)
+            raise RuntimeError("stop")
+
+    def seeds(offset):
+        text = wf.read_text()
+        w = json.loads(text)
+        if offset:
+            for n in w.values():
+                if isinstance(n.get("inputs", {}).get("seed"), int):
+                    n["inputs"]["seed"] = (n["inputs"]["seed"] + offset) % (2 ** 31)
+        return [n["inputs"]["seed"] for n in w.values()
+                if isinstance(n.get("inputs", {}).get("seed"), int)]
+
+    assert seeds(0) == [56, 42]                    # first attempt is reproducible
+    assert seeds(1009) == [1065, 1051]             # a retry is a different sample
+    assert seeds(1009) != seeds(2018)              # and each retry differs again
