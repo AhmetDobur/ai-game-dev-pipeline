@@ -32,8 +32,15 @@ class MotionStage:
     def render_preview(self, glb: Path) -> Path | None:
         """Best-effort 512px PNG next to the glb so a human (or a review stage) can
         see what was generated. Failure never blocks the pipeline."""
+        # ABSOLUTE, always: blender resolves a relative output path against its
+        # own cwd, not ours. Task output paths are stored relative, so every
+        # preview and every .metrics.json was being written to C:\workspace\...
+        # and silently lost -- which left _validate_geometry with no metrics to
+        # read, and "no metrics" is a pass. A library that came out as a flat
+        # 1.3%-thick disc shipped as done because of exactly this.
+        glb = Path(glb).resolve()
         out = glb.with_suffix(".preview.png")
-        script = str(Path(self.script).parent / "blender_preview.py")
+        script = str((Path(self.script).parent / "blender_preview.py").resolve())
         try:
             r = subprocess.run(
                 [self.blender, "--background", "--python", script, "--",

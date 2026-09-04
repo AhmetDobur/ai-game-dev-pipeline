@@ -1,5 +1,6 @@
 """Mesh-shape checks: only objectively broken geometry may fail a task."""
 import json
+from pathlib import Path
 
 
 
@@ -26,3 +27,27 @@ def test_whole_figure_passes(tmp_path):
     (tmp_path / "hero.glb.metrics.json").write_text(
         json.dumps({"bbox": [0.33, 0.25, 1.0]}))   # 3.0x taller than wide
     assert verdict(mesh, humanoid=True)[0]
+
+
+def test_render_preview_passes_absolute_paths_to_blender(tmp_path, monkeypatch):
+    """Blender resolves a relative output path against ITS cwd, not ours, so a
+    relative glb sent every preview and every .metrics.json to C:\\workspace."""
+    from pipeline.adapters.motion import MotionStage
+    import subprocess
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"png")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    (tmp_path / "art").mkdir()
+    (tmp_path / "art" / "m.glb").write_bytes(b"glTF")
+
+    MotionStage().render_preview(Path("art/m.glb"))       # relative, as stored
+    glb_arg, out_arg = seen["cmd"][-2], seen["cmd"][-1]
+    assert Path(glb_arg).is_absolute() and Path(out_arg).is_absolute()
+    assert Path(out_arg).parent == (tmp_path / "art").resolve()
