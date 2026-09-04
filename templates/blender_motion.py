@@ -155,21 +155,6 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
                         (cx + sx * h * 0.09, cy, z(0.05)), thigh)
             bone(f"{side}Foot", shin.tail,
                  (cx + sx * h * 0.09, cy - h * 0.06, lo[2]), shin)
-    else:
-        # generic articulated spine along the longest horizontal axis
-        n = 5
-        prev = None
-        span = max(hi[0] - lo[0], hi[1] - lo[1], 1e-4)
-        along_x = (hi[0] - lo[0]) >= (hi[1] - lo[1])
-        for i in range(n):
-            t0, t1 = i / n, (i + 1) / n
-            # run the spine through the mesh's vertical center (cz), not cy —
-            # otherwise the rig lands off an upright creature and auto-weights fail
-            if along_x:
-                head = (lo[0] + span * t0, cy, cz); tail = (lo[0] + span * t1, cy, cz)
-            else:
-                head = (cx, lo[1] + span * t0, cz); tail = (cx, lo[1] + span * t1, cz)
-            prev = bone(f"seg.{i}", head, tail, prev)
 
         # A cloak is not skin: it hangs off the shoulders and swings a beat
         # behind the body. Give it its own chain down the back BEFORE binding,
@@ -186,6 +171,22 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
                 b = top + (lo[2] - top) * ((i + 1) / CLOAK_SEGMENTS)
                 prev = bone(f"Cloak.{i}", (cx, back, a), (cx, back, b),
                             prev or chest)
+
+    else:
+        # generic articulated spine along the longest horizontal axis
+        n = 5
+        prev = None
+        span = max(hi[0] - lo[0], hi[1] - lo[1], 1e-4)
+        along_x = (hi[0] - lo[0]) >= (hi[1] - lo[1])
+        for i in range(n):
+            t0, t1 = i / n, (i + 1) / n
+            # run the spine through the mesh's vertical center (cz), not cy —
+            # otherwise the rig lands off an upright creature and auto-weights fail
+            if along_x:
+                head = (lo[0] + span * t0, cy, cz); tail = (lo[0] + span * t1, cy, cz)
+            else:
+                head = (cx, lo[1] + span * t0, cz); tail = (cx, lo[1] + span * t1, cz)
+            prev = bone(f"seg.{i}", head, tail, prev)
 
     bpy.ops.object.mode_set(mode="OBJECT")
     print(f"[motion] rig: {len(arm.data.bones)} bones "
