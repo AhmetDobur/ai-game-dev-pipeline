@@ -24,8 +24,12 @@ def validate(task: dict, output_paths: list[Path], godot_binary: str = "godot",
         ok, detail = _validate_files(output_paths, MESH_EXTS, MIN_MESH_BYTES, "mesh")
         if not ok:
             return ok, detail
-        ok, detail = _validate_geometry(output_paths)
-        return (ok, detail) if not ok else _validate_rigs(output_paths)
+        # NO rig check here: a design_3d output is a bare mesh and has no
+        # skeleton to be bound to. Demanding a skin failed two perfectly good
+        # 200k-triangle characters three times each, discarding about twelve
+        # hours of GPU time, because the meshes were exactly what they should be.
+        # Skinning is the rig_animate stage's contract, checked below.
+        return _validate_geometry(output_paths)
     if kind == "rig_animate":
         ok, detail = _validate_files(output_paths, {".glb", ".gltf"}, MIN_MESH_BYTES,
                                      "animated model")

@@ -143,3 +143,12 @@ def test_seed_offset_changes_every_sampler_but_leaves_attempt_zero_alone(tmp_pat
     assert seeds(0) == [56, 42]                    # first attempt is reproducible
     assert seeds(1009) == [1065, 1051]             # a retry is a different sample
     assert seeds(1009) != seeds(2018)              # and each retry differs again
+
+
+def test_a_bare_mesh_is_not_required_to_have_a_skin(tmp_path):
+    """design_3d produces an unrigged mesh; only rig_animate must be skinned."""
+    import inspect
+    from pipeline import validate
+    src = inspect.getsource(validate.validate)
+    d3 = src[src.index('if kind == "design_3d"'):src.index('if kind == "rig_animate"')]
+    assert "_validate_rigs" not in d3, "design_3d must not demand a skeleton binding"
