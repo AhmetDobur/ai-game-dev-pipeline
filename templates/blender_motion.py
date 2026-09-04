@@ -432,16 +432,19 @@ def punch_library(cmu_dir, out_dir=""):
         return []
     if cmu_dir in _PUNCH_CACHE:
         return _PUNCH_CACHE[cmu_dir]
-    cache = os.path.join(out_dir or cmu_dir, "punch_library.json")
-    try:
-        with open(cache) as fh:
-            found = json.load(fh)
-        if found:
+    # beside the mocap, not beside the run: the survey describes the LIBRARY, so
+    # every character reuses one copy instead of re-mining per output directory
+    caches = [os.path.join(d, "punch_library.json") for d in (cmu_dir, out_dir) if d]
+    for cache in caches:
+        try:
+            with open(cache) as fh:
+                found = json.load(fh)
+        except Exception:  # noqa: BLE001  -- absent or unreadable: try the next
+            continue
+        if found and all("fps" in p for p in found):
             _PUNCH_CACHE[cmu_dir] = found
             print(f"[motion] punch library: {len(found)} punches (cached)")
             return found
-    except Exception:  # noqa: BLE001  -- absent or unreadable: mine it
-        pass
     paths = _bvh_paths(cmu_dir)
     found = []
     for trial in PUNCH_TRIALS:
@@ -456,11 +459,13 @@ def punch_library(cmu_dir, out_dir=""):
             found.append(p)
         print(f"[motion] punch library: {trial} -> {len(found)} so far")
     _PUNCH_CACHE[cmu_dir] = found
-    try:
-        with open(cache, "w") as fh:
-            json.dump(found, fh)
-    except OSError:
-        pass          # a read-only mocap directory is not a reason to fail
+    for cache in caches:
+        try:
+            with open(cache, "w") as fh:
+                json.dump(found, fh)
+            break
+        except OSError:
+            continue  # a read-only mocap directory is not a reason to fail
     return found
 
 
