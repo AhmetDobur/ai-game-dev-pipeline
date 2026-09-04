@@ -29,6 +29,12 @@ _HOOK_ARC = 0.30         # lateral bow away from the chamber->impact chord
 _BODY_LEVEL = -0.10      # impact below the chest by this much is a body shot
 _HEAD_LEVEL = 0.02       # at or above the chest is a head shot
 _MIN_GAP_S = 0.20        # two peaks closer than this are one punch, not two
+# A punch is a fast event. Without these bounds the chamber search runs back
+# through seconds of guard drift in a forty-second trial and measures the hand
+# rising from the performer's hip, which reported climbs of 1.5 torso lengths
+# and labelled three quarters of a boxing session "uppercut".
+_MAX_WINDUP_S = 0.30     # chamber -> impact: a thrown punch lands inside this
+_MAX_RECOVER_S = 0.35    # impact -> back on guard
 
 
 def _sub(a, b):
@@ -124,7 +130,7 @@ def _peaks(reach, min_gap):
     return sorted(kept)
 
 
-def _chamber(reach, peak, eps=1e-3):
+def _chamber(reach, peak, max_back, eps=1e-3):
     """The frame the hand LEAVES guard on, which is where the punch starts.
 
     Walking back from the peak finds where the hand stopped coming forward, but
@@ -135,8 +141,8 @@ def _chamber(reach, peak, eps=1e-3):
     defines an uppercut disappears. So: walk back to the plateau, then forward
     to its last frame, which is the moment the hand actually moves.
     """
-    i = peak
-    while i > 0 and reach[i - 1] <= reach[i]:
+    i, stop = peak, max(0, peak - max_back)
+    while i > stop and reach[i - 1] <= reach[i]:
         i -= 1
     floor = reach[i]
     while i < peak and reach[i + 1] <= floor + eps:
@@ -144,11 +150,10 @@ def _chamber(reach, peak, eps=1e-3):
     return i
 
 
-def _recovery(reach, peak):
+def _recovery(reach, peak, max_fwd):
     """Where the hand finishes returning to guard after the peak."""
-    i = peak
-    n = len(reach)
-    while i < n - 1 and reach[i + 1] <= reach[i]:
+    i, stop = peak, min(len(reach) - 1, peak + max_fwd)
+    while i < stop and reach[i + 1] <= reach[i]:
         i += 1
     return i
 
@@ -210,9 +215,11 @@ def mine_hand(track, torso, hand, fps):
     if not reach:
         return []
     out = []
+    back = max(2, int(_MAX_WINDUP_S * fps))
+    fwd = max(2, int(_MAX_RECOVER_S * fps))
     for peak in _peaks(reach, max(1, int(_MIN_GAP_S * fps))):
-        chamber = _chamber(reach, peak)
-        recovery = _recovery(reach, peak)
+        chamber = _chamber(reach, peak, back)
+        recovery = _recovery(reach, peak, fwd)
         if peak - chamber < 2 or recovery - peak < 1:
             continue
         if reach[peak] / torso < _MIN_REACH:
