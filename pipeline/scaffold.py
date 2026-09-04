@@ -17,7 +17,11 @@ _KEYS = {"move_left": 65, "move_right": 68, "move_forward": 87, "move_back": 83,
          "p2_move_left": 4194319, "p2_move_right": 4194321,
          "p2_move_forward": 4194320, "p2_move_back": 4194322,
          "p2_look_left": 74, "p2_look_right": 76,
-         "p2_look_up": 73, "p2_look_down": 75}
+         "p2_look_up": 73, "p2_look_down": 75,
+         # Q/E strike with the left/right hand. Seat 2 gets N/M, which sit under
+         # the same hand as its IJKL look keys.
+         "attack_left": 81, "attack_right": 69,
+         "p2_attack_left": 78, "p2_attack_right": 77}
 
 PROJECT_GODOT = """config_version=5
 
@@ -483,6 +487,10 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
     (game_dir / "export_presets.cfg").write_text(EXPORT_PRESETS, encoding="utf-8")
     # shipped with every project so the assemble step can photograph the world it
     # just built; harmless when unused, and it never steals an existing camera
+    for name in ("combat.gd", "cloak.gd"):
+        src = Path(__file__).resolve().parent.parent / "templates" / name
+        if src.exists():
+            shutil.copy2(src, game_dir / "scripts" / name)
     shot_src = Path(__file__).resolve().parent.parent / "templates" / "godot_shot.gd"
     if shot_src.exists():
         (game_dir / "scripts").mkdir(exist_ok=True)

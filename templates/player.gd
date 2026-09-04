@@ -29,6 +29,10 @@ const MOUSE_SENS := 0.0022
 @onready var _camera: Camera3D = get_node_or_null(camera_path) as Camera3D
 
 var _anim: AnimationPlayer = null
+var _combat: CombatController = null
+var _cloak: CloakPhysics = null
+var _pad_left := false      # edge detection for pad buttons, which have no
+var _pad_right := false     # just_pressed equivalent per device
 var _clip := ""
 var _keyboard := true
 
@@ -48,6 +52,20 @@ func _ready() -> void:
 	if _anim:
 		for a in _anim.get_animation_list():
 			_anim.get_animation(a).loop_mode = Animation.LOOP_LINEAR
+	# after the loop flags above, so it can clear them on the strike clips: a
+	# punch that loops is a windmill
+	_combat = CombatController.new()
+	add_child(_combat)
+	_combat.setup(_anim)
+	var skel := find_child("Skeleton3D", true, false) as Skeleton3D
+	if skel:
+		_cloak = CloakPhysics.new()
+		add_child(_cloak)
+		_cloak.setup(skel)
+		# a landed punch throws the shoulders, and cloth that ignores the hit
+		# is the moment the illusion drops
+		_combat.strike_landed.connect(func(_m, _d):
+			_cloak.impulse(-global_transform.basis.z, 0.06))
 
 
 func _refresh_seat() -> void:
@@ -99,6 +117,20 @@ func _keys(prefix: String, a: String, b: String, c: String, d: String) -> Vector
 func _physics_process(delta: float) -> void:
 	var prefix := "" if device == 0 else "p2_"
 
+	# Q is the left hand, E the right; on a pad, X and B. Read every frame so a
+	# press during a strike is buffered rather than dropped.
+	if Input.is_action_just_pressed(prefix + "attack_left") \
+			or (not _keyboard and Input.is_joy_button_pressed(device, JOY_BUTTON_X)
+				and not _pad_left):
+		_combat.press("q")
+	if Input.is_action_just_pressed(prefix + "attack_right") \
+			or (not _keyboard and Input.is_joy_button_pressed(device, JOY_BUTTON_B)
+				and not _pad_right):
+		_combat.press("e")
+	_pad_left = not _keyboard and Input.is_joy_button_pressed(device, JOY_BUTTON_X)
+	_pad_right = not _keyboard and Input.is_joy_button_pressed(device, JOY_BUTTON_B)
+	_combat.tick(delta)
+
 	var look := _stick(JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y)
 	if look == Vector2.ZERO and _keyboard and device != 0:
 		look = _keys(prefix, "look_left", "look_right", "look_up", "look_down") \
@@ -124,10 +156,16 @@ func _physics_process(delta: float) -> void:
 	velocity.y = 0.0 if is_on_floor() else velocity.y - GRAVITY * delta
 	move_and_slide()
 
-	if dir == Vector3.ZERO:
-		_play("idle")
+	# A strike owns the body until it recovers. Without this the locomotion clip
+	# is re-selected every frame and immediately overwrites the punch, so the
+	# character appears to ignore the input entirely.
+	if not _combat.locks_movement():
+		if dir == Vector3.ZERO:
+			_play("idle")
+		else:
+			_play("run" if running else "walk")
 	else:
-		_play("run" if running else "walk")
+		_clip = ""      # so the locomotion clip re-plays cleanly on recovery
 
 	# the camera renders inside a SubViewport, so it cannot be a child of the
 	# player; carry the spring arm's collision-corrected tip across every frame

@@ -102,7 +102,7 @@ def try_unirig(mesh_obj, unirig, out_dir):
         return None
 
 
-def procedural_rig(mesh_obj, body_plan):
+def procedural_rig(mesh_obj, body_plan, extras=()):
     """Fit a minimal armature to the mesh bounding box. Humanoid gets a biped
     template; anything else gets a head->tail spine chain that suits fish, blobs,
     dragons, quadruped torsos — whatever shape arrived."""
@@ -170,6 +170,22 @@ def procedural_rig(mesh_obj, body_plan):
             else:
                 head = (cx, lo[1] + span * t0, cz); tail = (cx, lo[1] + span * t1, cz)
             prev = bone(f"seg.{i}", head, tail, prev)
+
+        # A cloak is not skin: it hangs off the shoulders and swings a beat
+        # behind the body. Give it its own chain down the back BEFORE binding,
+        # so the weighting pass below picks the back-hanging geometry up on
+        # these bones instead of gluing it to the spine. Godot then drives the
+        # chain with a verlet solver (scripts/cloak.gd) rather than a canned
+        # wiggle -- the cloth reacts to how the character actually moved.
+        if any("cloak" in e or "cape" in e for e in extras):
+            depth = hi[1] - lo[1]
+            back = cy + depth * 0.28          # behind the spine, inside the mesh
+            prev, top = None, z(0.84)
+            for i in range(CLOAK_SEGMENTS):
+                a = top + (lo[2] - top) * (i / CLOAK_SEGMENTS)
+                b = top + (lo[2] - top) * ((i + 1) / CLOAK_SEGMENTS)
+                prev = bone(f"Cloak.{i}", (cx, back, a), (cx, back, b),
+                            prev or chest)
 
     bpy.ops.object.mode_set(mode="OBJECT")
     # skin: automatic weights binds arbitrary geometry to whatever bones we made
@@ -563,6 +579,8 @@ _BLEND_FRACTION = 0.25      # tail cross-faded back into the head
 _MIN_CYCLIC_SECONDS = 3.0   # a walk/run source shorter than this is a fragment
 _BREATH_SECONDS = 4.3       # ~14 breaths a minute, resting
 _BREATH_INHALE = 0.4        # in is quicker than out, which is what reads as alive
+CLOAK_SEGMENTS = 6          # enough links to bend twice; more costs runtime for
+                            # detail the silhouette will not show
 
 
 def is_cyclic(clip_name):
@@ -910,7 +928,7 @@ def main():
         # always gets a live mesh object (never a stale, deleted reference)
         reset_scene()
         mesh = import_mesh(ARGS["mesh"])
-        arm = procedural_rig(mesh, body_plan)
+        arm = procedural_rig(mesh, body_plan, extras)
 
     # build every clip as a named action stashed on its own NLA track, then export
     # ONE glb — Godot's AnimationPlayer then has idle/walk/run to switch between,
