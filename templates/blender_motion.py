@@ -281,7 +281,14 @@ def cmu_index(cmu_dir):
     if cmu_dir in _CMU_INDEX_CACHE:
         return _CMU_INDEX_CACHE[cmu_dir]
     entries = {}
-    for base, _dirs, files in os.walk(cmu_dir):
+    # Search the PARENT too. The distribution puts the BVH files in a data/
+    # subdirectory and the index beside it, not inside it, so pointing cmu_dir
+    # at data/ -- which is what you must do for the clips to be found -- hid the
+    # index completely: every walk, run and idle in this project has been a
+    # procedural sine wave, not mocap, for exactly this reason.
+    roots = [cmu_dir, os.path.dirname(os.path.abspath(cmu_dir or "."))]
+    for root in roots:
+      for base, _dirs, files in os.walk(root):
         for f in files:
             if "index" not in f.lower() or not f.lower().endswith(".txt"):
                 continue
@@ -290,7 +297,9 @@ def cmu_index(cmu_dir):
                     m = _TRIAL_RE.match(line.replace("\t", " ").strip()
                                         if "\t" in line else line.rstrip("\n"))
                     if m:
-                        entries[m.group(1)] = m.group(2).lower()
+                        entries.setdefault(m.group(1), m.group(2).lower())
+      if entries:
+          break        # the nearer index wins; do not let the parent shadow it
     _CMU_INDEX_CACHE[cmu_dir] = entries
     return entries
 
@@ -334,13 +343,18 @@ def find_cmu_clip(cmu_dir, clip):
 
 
 PROVENANCE = {}      # clip -> how it was actually produced, written beside the glb
-CLIP_WINDOWS = {}    # clip -> (first, last) source frame, when the clip is a slice
+# clip -> (start, end) in SECONDS. Seconds, not frames: the punch library is
+# mined from 120 fps CMU data, while retarget_onto imports with use_fps_scale so
+# the sampled track is at the scene's 30 -- a 4841-frame trial arrives as 1210.
+# Frame indices from the survey would land a quarter of the way into the clip.
+CLIP_WINDOWS = {}
 
 # CMU trials indexed as boxing. Every one is continuous shadowboxing, so the
 # named punches are cut out of them by punch_mining rather than looked up.
 PUNCH_TRIALS = ("13_17", "13_18", "14_01", "14_02", "14_03", "15_13")
 _PUNCH_TRACK_BONES = ("LeftHand", "RightHand", "LeftArm", "RightArm", "Hips")
 _PUNCH_CACHE = {}
+_PUNCH_PAD_S = 0.06     # guard held either side of the throw
 
 
 def _bvh_paths(cmu_dir):
@@ -350,6 +364,24 @@ def _bvh_paths(cmu_dir):
             if f.lower().endswith(".bvh"):
                 out.setdefault(os.path.splitext(f)[0], os.path.join(base, f))
     return out
+
+
+def bvh_fps(bvh_path, default=FPS):
+    """Frames per second from the BVH's own header.
+
+    CMU ships at 120 fps. Mining at the module's 30 shrinks every duration
+    bound by a factor of four: the windup cap becomes 0.075 s, so a punch is cut
+    to a 20-frame stub and the classifier reads whatever fragment that leaves.
+    """
+    try:
+        with open(bvh_path, errors="replace") as fh:
+            for line in fh:
+                if line.strip().lower().startswith("frame time:"):
+                    dt = float(line.split(":", 1)[1])
+                    return round(1.0 / dt) if dt > 0 else default
+    except Exception:  # noqa: BLE001
+        pass
+    return default
 
 
 def _sample_tracks(bvh_path):
@@ -418,8 +450,9 @@ def punch_library(cmu_dir, out_dir=""):
         tracks, f0, _f1 = _sample_tracks(paths[trial])
         if not tracks:
             continue
-        for p in punch_mining.mine(tracks, FPS):
-            p.update(trial=trial, path=paths[trial], offset=f0)
+        fps = bvh_fps(paths[trial])
+        for p in punch_mining.mine(tracks, fps):
+            p.update(trial=trial, path=paths[trial], offset=f0, fps=fps)
             found.append(p)
         print(f"[motion] punch library: {trial} -> {len(found)} so far")
     _PUNCH_CACHE[cmu_dir] = found
@@ -447,7 +480,12 @@ def punch_clip(clip, cmu_dir, out_dir=""):
     hit = punch_mining.select(punch_library(cmu_dir, out_dir), base, variant)
     if not hit:
         return None
-    return hit["path"], (hit["start"], hit["end"]), hit
+    fps = hit.get("fps") or bvh_fps(hit["path"])
+    # a couple of frames of guard either side: starting exactly on the chamber
+    # makes the punch begin mid-motion, which reads as a snap rather than a throw
+    pad = _PUNCH_PAD_S
+    return hit["path"], (max(0.0, hit["start"] / fps - pad),
+                         (hit["end"] / fps) + pad), hit
 
 
 def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
@@ -661,8 +699,10 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # seconds" of a forty-second trial and throw that precision away.
         win = CLIP_WINDOWS.get(clip_name)
         if win:
-            a, b = max(0, min(win[0], n - 1)), max(0, min(win[1], n - 1))
-            if b <= a:
+            scene_fps = bpy.context.scene.render.fps or FPS
+            a = max(0, min(int(win[0] * scene_fps), n - 1))
+            b = max(0, min(int(win[1] * scene_fps), n - 1))
+            if b - a < 2:
                 a, b = clip_window(track, clip_name, n)
         else:
             a, b = clip_window(track, clip_name, n)
