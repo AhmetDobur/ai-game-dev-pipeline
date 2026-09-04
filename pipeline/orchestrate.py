@@ -17,6 +17,21 @@ def start_run(cfg: dict, conn, instruction_path: Path,
     return run_id
 
 
+def _start_coder(comfy, coder):
+    """Free ComfyUI's VRAM, THEN start the coder.
+
+    Freeing was only a teardown of the image waves, which covers memory this run
+    put there and nothing else. ComfyUI holding ~9 GB from an earlier job or a
+    manual workflow is enough to stop the 32B coder's 19.5 GB from loading at
+    all -- "llama-server exited with 1" -- and the whole run then fails at its
+    first code task. Making the free a precondition of the load covers both.
+    """
+    def start():
+        comfy.free_vram()
+        coder.start()
+    return start
+
+
 def _plan_patch(cfg, conn, run_id, parent_id, instruction, refs, router, livelog) -> None:
     """Snapshot the parent revision, decompose the delta, materialize the patch
     graph atomically. Selective re-run then falls out of the normal scheduler:
@@ -86,7 +101,7 @@ def execute_run(cfg: dict, conn, run_id: str) -> None:
             wave_order=cfg["scheduler"]["wave_order"],
             # the wave policy in one place: coder LLM loads/unloads around its wave,
             # ComfyUI frees VRAM after image/mesh waves, TTS is externally managed
-            wave_setup={"coder": coder.start},
+            wave_setup={"coder": _start_coder(comfy, coder)},
             wave_teardown={"coder": coder.stop,
                            "sdxl": comfy.free_vram,
                            "trellis": comfy.free_vram},
