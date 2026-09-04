@@ -188,6 +188,9 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
                             prev or chest)
 
     bpy.ops.object.mode_set(mode="OBJECT")
+    print(f"[motion] rig: {len(arm.data.bones)} bones "
+          f"({sum(1 for b in arm.data.bones if b.name.startswith('Cloak'))} cloak)"
+          f" extras={list(extras)}")
     # skin: automatic weights binds arbitrary geometry to whatever bones we made
     bpy.ops.object.select_all(action="DESELECT")
     mesh_obj.select_set(True); arm.select_set(True)
