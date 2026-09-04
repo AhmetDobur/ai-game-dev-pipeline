@@ -54,7 +54,10 @@ DEFAULTS: dict = {
     },
     "scheduler": {
         "max_attempts": 3,                   # in-wave retries per task
-        "wave_order": ["coder", "sdxl", "trellis", "motion", "tts"],
+        # image and mesh work first: it is the long pole (hours per mesh), it
+        # needs no LLM, and putting the 32B coder first meant a run died before
+        # generating anything at all whenever that model could not be loaded.
+        "wave_order": ["sdxl", "trellis", "motion", "coder", "tts"],
     },
     "watch": {
         "dir": "inbox",                      # drop instruction.md files here to auto-start

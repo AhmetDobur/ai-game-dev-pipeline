@@ -41,7 +41,7 @@ class Scheduler:
         self.executors = executors
         self.workspace = workspace
         self.max_attempts = max_attempts
-        self.wave_order = wave_order or ["coder", "sdxl", "trellis", "motion", "tts"]
+        self.wave_order = wave_order or ["sdxl", "trellis", "motion", "coder", "tts"]
         self.wave_setup = wave_setup or {}
         self.wave_teardown = wave_teardown or {}
         self.godot_binary = godot_binary
