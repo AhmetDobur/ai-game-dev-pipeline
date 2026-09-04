@@ -107,7 +107,7 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": 56,
-      "steps": 28,
+      "steps": 40,
       "cfg": 7.5,
       "denoise": 1.0,
       "model": [
@@ -165,7 +165,7 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": 42,
-      "steps": 20,
+      "steps": 28,
       "cfg": 7.5,
       "denoise": 1.0,
       "model": [
@@ -214,7 +214,7 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": 42,
-      "steps": 28,
+      "steps": 40,
       "cfg": 7.5,
       "denoise": 1.0,
       "model": [
@@ -271,7 +271,7 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": 43,
-      "steps": 28,
+      "steps": 40,
       "cfg": 4.5,
       "denoise": 1.0,
       "model": [
