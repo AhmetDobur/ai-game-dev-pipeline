@@ -24,6 +24,9 @@ import sys
 import bpy  # provided by Blender's own Python; absent in the pipeline venv
 import mathutils
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import punch_mining  # noqa: E402  -- sibling module, path fixed just above
+
 ARGS = json.loads(sys.argv[sys.argv.index("--") + 1]) if "--" in sys.argv else {}
 FPS = 30
 
@@ -331,12 +334,135 @@ def find_cmu_clip(cmu_dir, clip):
 
 
 PROVENANCE = {}      # clip -> how it was actually produced, written beside the glb
+CLIP_WINDOWS = {}    # clip -> (first, last) source frame, when the clip is a slice
+
+# CMU trials indexed as boxing. Every one is continuous shadowboxing, so the
+# named punches are cut out of them by punch_mining rather than looked up.
+PUNCH_TRIALS = ("13_17", "13_18", "14_01", "14_02", "14_03", "15_13")
+_PUNCH_TRACK_BONES = ("LeftHand", "RightHand", "LeftArm", "RightArm", "Hips")
+_PUNCH_CACHE = {}
+
+
+def _bvh_paths(cmu_dir):
+    out = {}
+    for base, _dirs, files in os.walk(cmu_dir or ""):
+        for f in files:
+            if f.lower().endswith(".bvh"):
+                out.setdefault(os.path.splitext(f)[0], os.path.join(base, f))
+    return out
+
+
+def _sample_tracks(bvh_path):
+    """World positions per frame for the joints the punch miner needs.
+
+    The scene's frame range is Blender's default 1..250 and has nothing to do
+    with the clip; reading it instead of the action's own range truncated every
+    forty-second boxing trial to two seconds, which is why the first pass over
+    real data found four punches in a session containing fifty.
+    """
+    before = set(bpy.context.scene.objects)
+    try:
+        bpy.ops.import_anim.bvh(filepath=bvh_path, target="ARMATURE",
+                                rotate_mode="NATIVE", update_scene_fps=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"[motion] punch source {os.path.basename(bvh_path)} failed: {e}")
+        return None, 0, 0
+    src = next((o for o in bpy.context.scene.objects
+                if o not in before and o.type == "ARMATURE"), None)
+    if src is None:
+        return None, 0, 0
+    try:
+        if any(b not in src.pose.bones for b in _PUNCH_TRACK_BONES):
+            return None, 0, 0
+        act = src.animation_data.action if src.animation_data else None
+        f0, f1 = (int(act.frame_range[0]), int(act.frame_range[1])) if act else (0, 0)
+        tracks = {b: [] for b in _PUNCH_TRACK_BONES}
+        for f in range(f0, f1 + 1):
+            bpy.context.scene.frame_set(f)
+            for b in tracks:
+                tracks[b].append(tuple(src.matrix_world @ src.pose.bones[b].head))
+        return tracks, f0, f1
+    finally:
+        act = src.animation_data.action if src.animation_data else None
+        bpy.data.objects.remove(src, do_unlink=True)
+        if act and act.users == 0:
+            bpy.data.actions.remove(act)
+
+
+def punch_library(cmu_dir, out_dir=""):
+    """Every punch in every boxing trial, mined once and cached.
+
+    Sampling six forty-second trials means thirty thousand frame_set calls, so
+    the result is written to disk: a rig job asks for six named punches and must
+    not pay for the survey six times, nor again on the next character.
+    """
+    if not cmu_dir or not os.path.isdir(cmu_dir):
+        return []
+    if cmu_dir in _PUNCH_CACHE:
+        return _PUNCH_CACHE[cmu_dir]
+    cache = os.path.join(out_dir or cmu_dir, "punch_library.json")
+    try:
+        with open(cache) as fh:
+            found = json.load(fh)
+        if found:
+            _PUNCH_CACHE[cmu_dir] = found
+            print(f"[motion] punch library: {len(found)} punches (cached)")
+            return found
+    except Exception:  # noqa: BLE001  -- absent or unreadable: mine it
+        pass
+    paths = _bvh_paths(cmu_dir)
+    found = []
+    for trial in PUNCH_TRIALS:
+        if trial not in paths:
+            continue
+        tracks, f0, _f1 = _sample_tracks(paths[trial])
+        if not tracks:
+            continue
+        for p in punch_mining.mine(tracks, FPS):
+            p.update(trial=trial, path=paths[trial], offset=f0)
+            found.append(p)
+        print(f"[motion] punch library: {trial} -> {len(found)} so far")
+    _PUNCH_CACHE[cmu_dir] = found
+    try:
+        with open(cache, "w") as fh:
+            json.dump(found, fh)
+    except OSError:
+        pass          # a read-only mocap directory is not a reason to fail
+    return found
+
+
+def punch_clip(clip, cmu_dir, out_dir=""):
+    """(bvh_path, (first, last)) for a named punch, or None.
+
+    Checked before the description search, because every boxing trial matches
+    the word "boxing" and the description search would hand back forty unlabelled
+    seconds of it for any of these names.
+    """
+    base, variant = clip.lower(), 0
+    m = _VARIANT_RE.match(base)
+    if m and m.group(1) in punch_mining.MOVESET:
+        base, variant = m.group(1), int(m.group(2))
+    if base not in punch_mining.MOVESET:
+        return None
+    hit = punch_mining.select(punch_library(cmu_dir, out_dir), base, variant)
+    if not hit:
+        return None
+    return hit["path"], (hit["start"], hit["end"]), hit
 
 
 def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
     """Path to a BVH for this humanoid clip (CMU exact match, else Kimodo), or None."""
     if body_plan != "humanoid":
         return None
+    punch = punch_clip(clip, cmu_dir, out_dir)
+    if punch:
+        path, window, hit = punch
+        CLIP_WINDOWS[clip] = window
+        print(f"[motion] {clip}: mined from {hit['trial']} frames "
+              f"{hit['start']}-{hit['impact']}-{hit['end']} ({hit['kind']}/{hit['target']})")
+        PROVENANCE[clip] = (f"mocap:{hit['trial']} punch {hit['start']}-{hit['end']} "
+                            f"{hit['hand']}/{hit['kind']}/{hit['target']}")
+        return path
     bvh = find_cmu_clip(cmu_dir, clip)
     if bvh:
         print(f"[motion] {clip}: CMU clip {os.path.basename(bvh)}")
@@ -530,7 +656,16 @@ def retarget_onto(arm, bvh_path, clip_name=""):
                 track[tname].append(src.pose.bones[sname].matrix_basis.to_quaternion())
         n = f1 - f0 + 1
         align_signs(track)
-        a, b = clip_window(track, clip_name, n)
+        # A mined punch already knows its own frames, down to the chamber and
+        # the recovery; the energy heuristic would re-pick "the busiest 2.5
+        # seconds" of a forty-second trial and throw that precision away.
+        win = CLIP_WINDOWS.get(clip_name)
+        if win:
+            a, b = max(0, min(win[0], n - 1)), max(0, min(win[1], n - 1))
+            if b <= a:
+                a, b = clip_window(track, clip_name, n)
+        else:
+            a, b = clip_window(track, clip_name, n)
         for tname, quats in track.items():
             track[tname] = smooth_quats(quats[a:b + 1])
         if is_cyclic(clip_name):
