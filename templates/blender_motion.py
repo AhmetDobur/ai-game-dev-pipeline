@@ -360,7 +360,137 @@ def bvh_for(clip, body_plan, cmu_dir, kimodo_url, out_dir):
     return None
 
 
-def retarget_onto(arm, bvh_path):
+# --- clip conditioning ------------------------------------------------------
+# Raw retargeted mocap is not a game clip. It is a long trial at an arbitrary
+# phase, it carries per-frame jitter from fitting one skeleton onto another, and
+# its ends do not meet, so a looping clip visibly pops every cycle. These four
+# passes fix each of those in turn: align, trim, smooth, close the loop.
+
+_CYCLIC = ("idle", "walk", "run", "jog")
+_ONESHOT_SECONDS = 2.5      # a punch is not twelve seconds long
+_SMOOTH_RADIUS = 2          # +/- 2 frames: kills jitter, keeps the snap
+_BLEND_FRACTION = 0.25      # tail cross-faded back into the head
+
+
+def is_cyclic(clip_name):
+    base = str(clip_name).lower().split("_")[0]
+    return base in _CYCLIC
+
+
+def align_signs(track):
+    """q and -q are the same rotation; a sign flip between frames is not.
+
+    Blender hands back whichever representative it likes, so a raw sample stream
+    contains flips that every later pass -- averaging, blending, interpolation --
+    reads as a full rotation. Make each frame agree with the one before it.
+    """
+    for quats in track.values():
+        for i in range(1, len(quats)):
+            if quats[i].dot(quats[i - 1]) < 0:
+                quats[i] = -quats[i]
+
+
+def _motion_energy(track, i, j):
+    """How much the body actually moves across [i, j) -- summed per-frame change."""
+    total = 0.0
+    for quats in track.values():
+        for k in range(i + 1, min(j, len(quats))):
+            total += 1.0 - abs(quats[k].dot(quats[k - 1]))
+    return total
+
+
+def _gait_period(track, n):
+    """Frames per locomotion cycle, by autocorrelation on the legs.
+
+    A walk clip should be exactly one stride, so it can loop. Compare the pose
+    stream against itself at every plausible lag and take the best match.
+    """
+    legs = [q for name, q in track.items() if "leg" in name.lower()]
+    if not legs or n < 2 * FPS // 3:
+        return None
+    best, best_score = None, -1.0
+    for lag in range(FPS // 3, min(2 * FPS, n // 2) + 1):   # 0.33s .. 2.0s strides
+        score, count = 0.0, 0
+        for quats in legs:
+            for i in range(0, len(quats) - lag, 2):
+                score += abs(quats[i].dot(quats[i + lag]))
+                count += 1
+        if count and score / count > best_score:
+            best, best_score = lag, score / count
+    # a weak best match means this is not really cyclic; do not force a stride
+    return best if best_score > 0.995 else None
+
+
+def clip_window(track, clip_name, n):
+    """The [a, b] slice of the trial worth keeping, inclusive.
+
+    Cyclic clips become exactly one stride, starting where the motion is
+    strongest so the stride is not half a stand-still. One-shot clips keep the
+    busiest few seconds, which is where the punch actually is.
+    """
+    if n <= 1:
+        return 0, max(0, n - 1)
+    if is_cyclic(clip_name):
+        period = _gait_period(track, n)
+        if period:
+            best_a, best_e = 0, -1.0
+            for a in range(0, n - period, max(1, period // 4)):
+                e = _motion_energy(track, a, a + period)
+                if e > best_e:
+                    best_a, best_e = a, e
+            return best_a, best_a + period
+    span = min(n - 1, int(_ONESHOT_SECONDS * FPS))
+    best_a, best_e = 0, -1.0
+    for a in range(0, n - span, max(1, span // 8)):
+        e = _motion_energy(track, a, a + span)
+        if e > best_e:
+            best_a, best_e = a, e
+    return best_a, best_a + span
+
+
+def smooth_quats(quats, radius=_SMOOTH_RADIUS):
+    """Moving average over a window, renormalised.
+
+    Retargeting one skeleton's proportions onto another leaves a per-frame
+    tremor that reads as buzzing on the final mesh. Averaging a couple of frames
+    either side removes it without visibly softening the impact of a strike.
+    """
+    if len(quats) < 2 * radius + 1:
+        return list(quats)
+    out = []
+    for i in range(len(quats)):
+        lo, hi = max(0, i - radius), min(len(quats), i + radius + 1)
+        acc = mathutils.Quaternion((0.0, 0.0, 0.0, 0.0))
+        for k in range(lo, hi):
+            q = quats[k]
+            if q.dot(quats[i]) < 0:
+                q = -q
+            acc.w += q.w; acc.x += q.x; acc.y += q.y; acc.z += q.z
+        acc.normalize()
+        out.append(acc)
+    return out
+
+
+def loop_blend(track, fraction=_BLEND_FRACTION):
+    """Cross-fade the tail back toward the head so the clip closes on itself.
+
+    Even one clean stride starts and ends on slightly different poses, and the
+    mismatch shows as a jerk at every loop point -- the single most visible
+    artefact in a walk or idle that plays continuously.
+    """
+    for quats in track.values():
+        n = len(quats)
+        span = max(1, int(n * fraction))
+        if n < 3:
+            continue
+        first = quats[0]
+        for i in range(n - span, n):
+            t = (i - (n - span) + 1) / span          # 0 -> 1 across the tail
+            quats[i] = quats[i].slerp(first, t)
+        quats[-1] = first.copy()
+
+
+def retarget_onto(arm, bvh_path, clip_name=""):
     """Sample a BVH and copy its per-bone local rotation onto `arm` (the armature the
     mesh is actually skinned to) by matching bone names. Returns the number of bones
     matched — 0 means the caller must fall back to procedural so the mesh still moves.
@@ -387,22 +517,42 @@ def retarget_onto(arm, bvh_path):
             return 0
         act = src.animation_data.action if src.animation_data else None
         f0, f1 = (int(act.frame_range[0]), int(act.frame_range[1])) if act else (0, FPS)
-        arm.animation_data_create()
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.mode_set(mode="POSE")
+
+        # Sample the whole trial FIRST, then decide what part of it is the clip.
+        # A CMU trial runs ten to sixty seconds and contains the move surrounded
+        # by the performer walking up, waiting and walking off; keyframing the
+        # raw range gave a twenty-second "walk" that never looped.
+        track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
             bpy.context.scene.frame_set(f)
             for sname, tname in pairs:
+                # matrix_basis captures the source's local pose whatever its rot mode
+                track[tname].append(src.pose.bones[sname].matrix_basis.to_quaternion())
+        n = f1 - f0 + 1
+        align_signs(track)
+        a, b = clip_window(track, clip_name, n)
+        for tname, quats in track.items():
+            track[tname] = smooth_quats(quats[a:b + 1])
+        if is_cyclic(clip_name):
+            loop_blend(track)
+
+        arm.animation_data_create()
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode="POSE")
+        for i in range(len(next(iter(track.values())))):
+            for _sname, tname in pairs:
                 tb = arm.pose.bones[tname]
                 tb.rotation_mode = "QUATERNION"
-                # matrix_basis captures the source's local pose whatever its rot mode
-                tb.rotation_quaternion = src.pose.bones[sname].matrix_basis.to_quaternion()
-                tb.keyframe_insert("rotation_quaternion", frame=f)
-                if f == f0:
+                tb.rotation_quaternion = track[tname][i]
+                tb.keyframe_insert("rotation_quaternion", frame=i)
+                if i == 0:
                     # rotation_mode is unkeyed DNA: a later procedural clip flips
                     # it to XYZ and this clip would replay wrong. Key it per clip.
-                    tb.keyframe_insert("rotation_mode", frame=f)
+                    tb.keyframe_insert("rotation_mode", frame=i)
         bpy.ops.object.mode_set(mode="OBJECT")
+        print(f"[motion] {clip_name}: trimmed {n} frames -> "
+              f"{len(next(iter(track.values())))}"
+              f"{' (looped)' if is_cyclic(clip_name) else ''}")
         print(f"[motion] retargeted {len(pairs)} bone(s) from mocap")
         return len(pairs)
     finally:
@@ -511,7 +661,7 @@ def main():
             arm.animation_data.action = None    # fresh action per clip
         bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""), ARGS.get("kimodo_url", ""),
                       out_dir)
-        if not (bvh and retarget_onto(arm, bvh)):
+        if not (bvh and retarget_onto(arm, bvh, clip)):
             procedural_clip(arm, clip)          # base body motion (never leaves it static)
             PROVENANCE[clip] = "procedural"     # retarget may have rejected the bvh too
         procedural_extras(arm, clip, extras)    # tail/jaw/wings on EVERY path
