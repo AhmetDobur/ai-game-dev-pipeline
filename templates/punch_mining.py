@@ -222,6 +222,12 @@ def mine_hand(track, torso, hand, fps):
         recovery = _recovery(reach, peak, fwd)
         if peak - chamber < 2 or recovery - peak < 1:
             continue
+        if chamber <= 0 or recovery >= len(reach) - 1:
+            # clipped by the end of the trial: the first frames of a BVH are the
+            # performer settling out of the rest pose, and a window clamped to
+            # the boundary is a fragment, not a punch. One such fragment -- four
+            # frames long -- was winning the "cross" ranking outright.
+            continue
         if reach[peak] / torso < _MIN_REACH:
             continue                       # a guard adjustment, not a punch
         if (reach[peak] - reach[chamber]) / torso < _MIN_TRAVEL:

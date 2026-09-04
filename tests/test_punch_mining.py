@@ -152,3 +152,12 @@ def test_every_requested_move_has_a_lookup_rule():
         assert hand in ("left", "right")
         assert score({"reach": 1.0, "rise": 0.0, "drop": 0.0,
                       "arc": 0.0, "height": 0.0}) is not None
+
+
+def test_a_punch_clipped_by_the_start_of_the_trial_is_discarded():
+    """A BVH opens with the performer settling out of rest, and a window clamped
+    to frame 0 is a fragment. One four-frame fragment was winning "cross"."""
+    left = _throw(GUARD, (-0.05, 0.62, 0.04)) + [_world(GUARD)] * 20
+    assert mine(_tracks(left=left), FPS) == []
+    padded = [_world(GUARD)] * 10 + left
+    assert mine(_tracks(left=padded), FPS)
