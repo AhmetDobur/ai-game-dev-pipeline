@@ -118,6 +118,28 @@ def extract_json(text: str) -> dict | list:
                     return json.loads(c[i:j + 1])
                 except json.JSONDecodeError:
                     continue
+    # Span-based extraction takes first-bracket to last-bracket, which is wrong
+    # whenever the reply holds MORE than one JSON value -- a restated plan, or a
+    # short array followed by the real one. The span is then "[...][...]" and
+    # cannot parse however well-formed each half is, which killed a whole
+    # planning run. Decode each opening bracket as its own value instead and
+    # keep the largest that parses.
+    # ponytail: O(n^2) worst case; replies are a few KB, revisit if that changes
+    dec = json.JSONDecoder()
+    best = None
+    for c in sorted(candidates, key=len, reverse=True):
+        for i, ch in enumerate(c):
+            if ch not in "[{":
+                continue
+            try:
+                val, _ = dec.raw_decode(c[i:])
+            except ValueError:
+                continue
+            if isinstance(val, (list, dict)) and (best is None
+                                                  or len(repr(val)) > len(repr(best))):
+                best = val
+    if best is not None:
+        return best
     raise ValueError(f"no parseable JSON in reply: {text[:200]!r}")
 
 

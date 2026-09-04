@@ -862,3 +862,16 @@ def test_modify_specs_are_validated_against_the_targets_real_type():
     with pytest.raises(ValueError, match="mesh_from"):
         validate_patch_specs([{"target": "r1-hero_anim", "spec": {"skin_to_rig": True}}],
                              _MANIFEST, {})
+
+
+def test_extract_json_picks_one_value_when_the_reply_holds_two():
+    """R1 restating its plan produced '[...][...]', which span extraction --
+    first bracket to last bracket -- cannot parse, and it killed a planning run.
+    """
+    from pipeline.adapters.llm import extract_json
+    two = ('[{"id": "a", "type": "design_2d"}]\n\n'
+           '[{"id": "b", "type": "design_3d"}, {"id": "c", "type": "assemble"}]')
+    assert extract_json(two) == [{"id": "b", "type": "design_3d"},
+                                 {"id": "c", "type": "assemble"}]
+    assert extract_json('[{"id": "z"}] and that completes the plan.') == [{"id": "z"}]
+    assert extract_json('```json\n[{"id": "x"}]\n```') == [{"id": "x"}]
