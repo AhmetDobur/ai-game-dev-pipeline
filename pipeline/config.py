@@ -38,6 +38,11 @@ DEFAULTS: dict = {
         "sdxl_workflow": "workflows/sdxl.json",
         "sdxl_img2img_workflow": "workflows/sdxl_img2img.json",
         "trellis_workflow": "workflows/trellis.json",
+        # heads get their own graph: a close-up crop, more sampler steps and a
+        # higher CFG on the structure pass, because faces are where this
+        # generator is weakest and a face on a full-body crop gets almost no
+        # voxels of its own
+        "trellis_head_workflow": "workflows/trellis_head.json",
         # a TRELLIS mesh measures ~55 min at 32-cubed on a Titan RTX, so anything
         # under an hour times out every character the pipeline ever builds
         "timeout_s": 5400,

@@ -16,6 +16,8 @@ _ERODE_PX = 4         # breaks the prop bridges between touching figures
 _MIN_RELATIVE_SIZE = 0.15   # a second hero is a sizeable fraction of the first
 _MIN_FIGURE_ASPECT = 1.3    # standing characters are taller than they are wide
 _MIN_MASK_COVERAGE = 0.05   # below this the matte failed; the frame IS the subject
+_HEAD_BAND = 0.22           # top fraction of a standing figure: head + shoulders
+_HEAD_UPSCALE = 1024        # a head crop is small; give the sampler pixels
 
 
 def _background_color(px, w: int, h: int) -> tuple[int, int, int]:
@@ -106,6 +108,66 @@ def _subjects(mask: list[list[bool]]) -> list[tuple[int, int, int, int, int]]:
                if c[0] >= _MIN_RELATIVE_SIZE * big
                and (c[4] - c[2] + 1) / max(c[3] - c[1] + 1, 1) >= _MIN_FIGURE_ASPECT]
     return figures or comps[:1]
+
+
+def crop_head(src: Path, dst: Path, index: int = 0,
+              band: float = _HEAD_BAND, upscale_to: int = _HEAD_UPSCALE) -> Path:
+    """Write a head-and-shoulders close-up of one figure to dst (PNG).
+
+    TRELLIS allocates voxels to what fills the frame, so a face that occupies
+    3% of a full-body reference is reconstructed from almost no signal and comes
+    back a blurred blob. Cropping to the head and upscaling gives the same
+    generator the same budget for a face that a full-body crop gives a whole
+    body. Falls back to the full-figure crop whenever the head cannot be located.
+    """
+    try:
+        img = Image.open(src).convert("RGB")
+    except Exception:
+        return src
+    w, h = img.size
+    scale = max(w, h) / _SCALE
+    small = img.resize((max(1, round(w / scale)), max(1, round(h / scale)))) \
+        if scale > 1 else img.copy()
+    mask = _erode(_foreground_mask(small), _ERODE_PX)
+    sw, sh = small.size
+    figures = _subjects(mask)
+    if not figures or figures[0][0] < _MIN_MASK_COVERAGE * sw * sh:
+        return crop_main_subject(src, dst, index)   # no clean figure -> whole body
+    if index >= len(figures):
+        index = 0
+    _, x0, y0, x1, y1 = figures[index]
+    # the head band: the top `band` of the figure, horizontally centred on the
+    # foreground actually present in that band, so a tilted or off-axis head is
+    # still centred rather than sliced by the figure's overall bounding box
+    y_end = y0 + max(1, int((y1 - y0 + 1) * band))
+    xs = [x for y in range(y0, min(y_end + 1, sh)) for x in range(x0, min(x1 + 1, sw))
+          if mask[y][x]]
+    if not xs:
+        return crop_main_subject(src, dst, index)
+    hx0, hx1 = min(xs), max(xs)
+    cx, half = (hx0 + hx1) / 2, (hx1 - hx0 + 1) * 0.8   # 1.6x the head's width
+    half = max(half, (y_end - y0 + 1) * 0.55)           # never narrower than tall
+    f = max(w, h) / max(sw, sh)
+    cx0, cx1 = max(0, int((cx - half) * f)), min(w, int((cx + half) * f))
+    cy0, cy1 = max(0, int((y0 - (y_end - y0) * 0.12) * f)), min(h, int(y_end * f))
+    if cx1 - cx0 < 8 or cy1 - cy0 < 8:
+        return crop_main_subject(src, dst, index)
+    crop = img.crop((cx0, cy0, cx1, cy1))
+    side = max(crop.size)
+    pos = ((side - crop.size[0]) // 2, (side - crop.size[1]) // 2)
+    try:
+        from rembg import remove
+        cut = remove(crop)
+        canvas = Image.new("RGB", (side, side), (255, 255, 255))
+        canvas.paste(cut, pos, cut)
+    except Exception:
+        canvas = Image.new("RGB", (side, side), _background_color(img.load(), w, h))
+        canvas.paste(crop, pos)
+    if side < upscale_to:   # a small crop carries no more detail, but the
+        canvas = canvas.resize((upscale_to, upscale_to), Image.LANCZOS)  # sampler
+    dst.parent.mkdir(parents=True, exist_ok=True)                        # gets room
+    canvas.save(dst, "PNG")
+    return dst
 
 
 def crop_main_subject(src: Path, dst: Path, index: int = 0) -> Path:

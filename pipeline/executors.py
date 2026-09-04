@@ -174,11 +174,13 @@ def build_executors(cfg: dict, workspace: Path,
         # image precedence: a user reference (cropped to its main figure, since
         # TRELLIS rebuilds everything in frame) beats the generated concept art
         subs = {"prompt": task["spec"].get("prompt", "")}
+        head = task["spec"].get("detail") == "head"
         ref = _ref_file(task)
         if ref:
-            from .refimage import crop_main_subject
-            subs["image"] = str(crop_main_subject(
-                ref, out_dir / "ref_crop.png",
+            from .refimage import crop_head, crop_main_subject
+            crop = crop_head if head else crop_main_subject
+            subs["image"] = str(crop(
+                ref, out_dir / ("ref_crop_head.png" if head else "ref_crop.png"),
                 int(task["spec"].get("ref_subject", 0))))
         elif task["spec"].get("concept_from"):
             subs["image"] = str(_resolve_dep(task, task["spec"]["concept_from"]))
@@ -189,7 +191,8 @@ def build_executors(cfg: dict, workspace: Path,
                              "from disk and no concept_from linked")
         # a retry must not recompute the identical mesh -- vary the sample per
         # attempt so "try again" is actually another roll of the figure
-        outputs = comfy.run_workflow(cfg["comfy"]["trellis_workflow"], subs, out_dir,
+        wf = cfg["comfy"]["trellis_head_workflow" if head else "trellis_workflow"]
+        outputs = comfy.run_workflow(wf, subs, out_dir,
                                      seed_offset=int(task.get("attempts", 0)) * 1009)
         for p in outputs:
             if p.suffix.lower() in (".glb", ".gltf"):

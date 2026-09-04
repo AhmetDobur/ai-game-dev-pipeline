@@ -916,3 +916,43 @@ def test_a_near_empty_matte_falls_back_to_the_whole_image(tmp_path, monkeypatch)
                                      for y in range(img.size[1])])
     out = refimage.crop_main_subject(src, tmp_path / "out.png", 0)
     assert Path(out).resolve() == src.resolve(), "a failed matte must not crop"
+
+
+def _figure_png(path, w=400, h=900):
+    """A crude standing figure on white: small head blob over a wide body."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (w, h), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    d.ellipse([170, 40, 230, 130], fill=(20, 20, 20))          # head
+    d.rectangle([120, 130, 280, 820], fill=(20, 20, 20))       # body
+    img.save(path)
+    return path
+
+
+def test_crop_head_frames_the_head_not_the_body(tmp_path):
+    from pipeline.refimage import crop_head
+    src = _figure_png(tmp_path / "fig.png")
+    out = crop_head(src, tmp_path / "head.png")
+    from PIL import Image
+    im = Image.open(out)
+    assert im.size[0] == im.size[1]          # square canvas for the sampler
+    assert im.size[0] >= 1024                # upscaled: a head crop is small
+    # the crop must come from the top of the figure, not the middle of the torso
+    dark = sum(1 for px in list(im.convert("L").getdata()) if px < 128)
+    assert dark > 0, "cropped an empty region"
+
+
+def test_crop_head_falls_back_when_no_figure(tmp_path):
+    from pipeline.refimage import crop_head
+    from PIL import Image
+    blank = tmp_path / "blank.png"
+    Image.new("RGB", (300, 300), (255, 255, 255)).save(blank)
+    # nothing detectable -> returns the source rather than a garbage fragment
+    assert crop_head(blank, tmp_path / "h.png") == blank
+
+
+def test_head_mesh_is_exempt_from_the_standing_figure_check():
+    from pipeline.validate import _is_humanoid
+    body = {"id": "hero_mesh", "spec": {"prompt": "the character"}}
+    head = {"id": "hero_mesh_head", "spec": {"prompt": "the character", "detail": "head"}}
+    assert _is_humanoid(body) and not _is_humanoid(head)

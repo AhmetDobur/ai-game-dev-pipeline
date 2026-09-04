@@ -75,10 +75,13 @@ def _validate_rigs(paths) -> tuple[bool, str]:
 
 def _is_humanoid(task: dict) -> bool:
     """Shape checks that only hold for a standing figure need to know it is one."""
-    plan = (task.get("spec") or {}).get("body_plan")
+    spec = task.get("spec") or {}
+    if spec.get("detail") == "head":
+        return False        # a head is about as wide as it is tall, by design
+    plan = spec.get("body_plan")
     if plan:
         return "humanoid" in str(plan).lower()
-    text = f'{task.get("id", "")} {(task.get("spec") or {}).get("prompt", "")}'.lower()
+    text = f'{task.get("id", "")} {spec.get("prompt", "")}'.lower()
     return any(w in text for w in ("character", "hero", "fighter", "villain", "player"))
 
 

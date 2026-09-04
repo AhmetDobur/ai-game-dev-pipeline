@@ -39,8 +39,12 @@ def test_structural_rules_and_repair():
         {"id": "build", "type": "assemble", "depends_on": [], "spec": {}},
     ]
     repair_task_list(bad)
-    # repair also synthesizes a design_3d for the orphan prop concept "char"
-    assert set(bad[2]["depends_on"]) == {"char", "char_mesh", "rig"}
+    # repair also synthesizes a design_3d for the orphan prop concept "char",
+    # and a head close-up mesh for the humanoid the rig animates
+    assert set(bad[2]["depends_on"]) == {"char", "char_mesh", "char_mesh_head", "rig"}
+    head = next(t for t in bad if t["id"] == "char_mesh_head")
+    assert head["type"] == "design_3d" and head["spec"]["detail"] == "head"
+    assert "close-up" in head["spec"]["prompt"]
     synth = next(t for t in bad if t["id"] == "char_mesh")
     assert synth["type"] == "design_3d" and synth["spec"]["concept_from"] == "char"
     # rig-on-art is retargeted through the synthesized mesh, which implies the dep

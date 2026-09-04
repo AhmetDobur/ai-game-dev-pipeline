@@ -106,9 +106,9 @@
   "13": {
     "class_type": "KSampler",
     "inputs": {
-      "seed": 56,
-      "steps": 40,
-      "cfg": 7.5,
+      "seed": 63,
+      "steps": 120,
+      "cfg": 9.0,
       "denoise": 1.0,
       "model": [
         "7",
@@ -164,8 +164,8 @@
   "16": {
     "class_type": "KSampler",
     "inputs": {
-      "seed": 42,
-      "steps": 28,
+      "seed": 49,
+      "steps": 120,
       "cfg": 7.5,
       "denoise": 1.0,
       "model": [
@@ -191,7 +191,7 @@
   "17": {
     "class_type": "Trellis2UpsampleStage",
     "inputs": {
-      "target_resolution": 1024,
+      "target_resolution": 1536,
       "positive": [
         "15",
         0
@@ -213,8 +213,8 @@
   "18": {
     "class_type": "KSampler",
     "inputs": {
-      "seed": 42,
-      "steps": 40,
+      "seed": 49,
+      "steps": 120,
       "cfg": 7.5,
       "denoise": 1.0,
       "model": [
@@ -270,7 +270,7 @@
   "21": {
     "class_type": "KSampler",
     "inputs": {
-      "seed": 43,
+      "seed": 50,
       "steps": 40,
       "cfg": 4.5,
       "denoise": 1.0,
@@ -314,7 +314,7 @@
   "23": {
     "class_type": "RemeshMesh",
     "inputs": {
-      "resolution": 512,
+      "resolution": 1024,
       "band": 1.0,
       "project_back": 0.0,
       "fix_poles": true,
@@ -368,7 +368,7 @@
   "27": {
     "class_type": "BakeTextureFromVoxel",
     "inputs": {
-      "texture_size": 2048,
+      "texture_size": 4096,
       "mesh": [
         "26",
         0

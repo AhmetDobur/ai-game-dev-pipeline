@@ -40,6 +40,10 @@ Rules:
   build spaces, only things. For an environment, emit SEVERAL prop-sized design_3d
   tasks (2-4 of them, each with its own single-object design_2d); the engine
   arranges them into the room automatically.
+- A design_3d whose spec has "detail": "head" is a head-and-shoulders close-up of a
+  character, built through a slower, higher-detail graph. You do not need to emit
+  these — every humanoid character gets one added automatically — but never delete
+  one that already exists, and never set "detail" on a prop.
 - code tasks for the Godot project; exactly one final "assemble" task depending on everything.
 - When the game description contains combat timing tables (frame data), copy them
   VERBATIM into one code task with "file": "scripts/combat_sim.gd" as
@@ -87,7 +91,14 @@ Game description:
 {instruction}
 ---
 
-Reply with ONLY a JSON array of tasks."""
+Before replying, re-read your own array and assume you got it wrong. Check each
+item and fix what fails:
+- every id in a depends_on, concept_from or mesh_from exists as a task id above
+- every design_3d names ONE object or ONE character, never a room, hall or scene
+- every design_2d that feeds a design_3d says "solo", one subject, plain background
+- every ref_image is copied character-for-character from the list of uploaded paths
+- exactly one assemble task, and nothing depends on it
+Do not explain the check. Reply with ONLY a JSON array of tasks."""
 
 
 _THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
@@ -415,6 +426,35 @@ def repair_task_list(tasks, reference_images: list[str] | None = None,
                          and x["spec"].get("concept_from") == m), None)
             if mesh:
                 t["spec"]["mesh_from"] = mesh
+    # Faces are where this generator is weakest: on a full-body crop a head owns
+    # a few percent of the frame, so it gets a few percent of the voxels and comes
+    # back a blurred blob. Every humanoid body mesh therefore also gets a head
+    # mesh, built from a head-and-shoulders crop of the same reference through a
+    # higher-step graph. Synthesized in code rather than asked for in the prompt,
+    # because a 7B router forgets a rule like this roughly as often as it applies it.
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    humanoid = {t["spec"].get("mesh_from") for t in tasks
+                if isinstance(t, dict) and t.get("type") == "rig_animate"
+                and str(t["spec"].get("body_plan", "humanoid")).lower() == "humanoid"}
+    heads = []
+    for mid in sorted(i for i in humanoid if isinstance(i, str)):
+        body = by_id.get(mid)
+        if not body or body.get("type") != "design_3d":
+            continue
+        if body["spec"].get("detail") == "head":
+            continue
+        hid = f"{mid}_head"
+        if hid in ids:
+            continue
+        spec = {k: v for k, v in body["spec"].items()
+                if k in ("prompt", "concept_from", "ref_image", "ref_subject")}
+        spec["prompt"] = (str(spec.get("prompt", "")).rstrip(", ")
+                          + ", head and shoulders close-up, face in sharp focus").lstrip(", ")
+        spec["detail"] = "head"
+        heads.append({"id": hid, "type": "design_3d",
+                      "depends_on": list(body.get("depends_on") or []), "spec": spec})
+        ids.add(hid)
+    tasks.extend(heads)
     for t in tasks:
         if not isinstance(t, dict):
             continue
