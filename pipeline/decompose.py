@@ -1,6 +1,7 @@
 """Stage 1: resident router LLM turns instruction.md into a typed, dependency-aware
 task list, which is inserted into the SQLite queue."""
 import json
+import difflib
 import re
 from pathlib import PurePath
 
@@ -342,6 +343,29 @@ def _repair_ref_image(spec: dict, reference_images: list[str]) -> None:
         spec.pop("ref_image", None)
 
 
+def _resolve_dep_id(dep, ids):
+    """Map a dependency the router invented onto an id that exists, or drop it.
+
+    A 7B router writing a large plan names dependencies that are near-misses of
+    its own task ids ("character_0_mesh" for "char_0_mesh"), and validation then
+    rejected the whole plan. Dropping an unresolvable edge is safe: assemble
+    depends on everything, and concept_from/mesh_from re-add the real edges
+    below, so ordering is preserved by the spec rather than by this string.
+    """
+    if not isinstance(dep, str) or dep in ids:
+        return dep
+    subs = [i for i in ids if isinstance(i, str) and (dep in i or i in dep)]
+    if len(subs) == 1:
+        return subs[0]
+    close = difflib.get_close_matches(dep, [i for i in ids if isinstance(i, str)],
+                                      n=2, cutoff=0.8)
+    if len(close) == 1 or (len(close) == 2 and close[0] != close[1]
+                           and difflib.SequenceMatcher(None, dep, close[0]).ratio()
+                           > difflib.SequenceMatcher(None, dep, close[1]).ratio()):
+        return close[0]
+    return None
+
+
 def repair_task_list(tasks, reference_images: list[str] | None = None,
                      instruction: str = "") -> None:
     """Deterministic fixes for mistakes every small router makes: spec references
@@ -394,7 +418,8 @@ def repair_task_list(tasks, reference_images: list[str] | None = None,
     for t in tasks:
         if not isinstance(t, dict):
             continue
-        deps = set(t.get("depends_on") or [])
+        deps = {_resolve_dep_id(d, ids) for d in (t.get("depends_on") or [])}
+        deps.discard(None)
         for key in ("concept_from", "mesh_from"):
             v = t["spec"].get(key)
             if isinstance(v, str) and v in ids:

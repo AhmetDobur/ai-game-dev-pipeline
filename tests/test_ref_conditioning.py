@@ -875,3 +875,23 @@ def test_extract_json_picks_one_value_when_the_reply_holds_two():
                                  {"id": "c", "type": "assemble"}]
     assert extract_json('[{"id": "z"}] and that completes the plan.') == [{"id": "z"}]
     assert extract_json('```json\n[{"id": "x"}]\n```') == [{"id": "x"}]
+
+
+def test_unknown_dependency_is_resolved_or_dropped_not_fatal():
+    """A near-miss dependency id must not reject an otherwise valid plan."""
+    from pipeline.decompose import repair_task_list
+    tasks = [
+        {"id": "char_0_art", "type": "design_2d", "depends_on": [],
+         "spec": {"prompt": "a knight"}},
+        {"id": "char_0_mesh", "type": "design_3d", "depends_on": ["char_0_art"],
+         "spec": {"prompt": "a knight", "concept_from": "char_0_art"}},
+        # the router's own typo, and an id that resolves to nothing at all
+        {"id": "char_0_anim", "type": "rig_animate",
+         "depends_on": ["character_0_mesh", "totally_unrelated_xyz"],
+         "spec": {"mesh_from": "char_0_mesh", "body_plan": "humanoid",
+                  "animations": ["idle"]}},
+    ]
+    repair_task_list(tasks)
+    deps = next(t for t in tasks if t["id"] == "char_0_anim")["depends_on"]
+    assert "char_0_mesh" in deps
+    assert "character_0_mesh" not in deps and "totally_unrelated_xyz" not in deps
