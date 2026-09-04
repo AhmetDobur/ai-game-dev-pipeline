@@ -47,8 +47,15 @@ class ComfyClient:
         r.raise_for_status()
         prompt_id = r.json()["prompt_id"]
 
-        deadline = time.time() + self.timeout_s
-        while time.time() < deadline:
+        # IDLE timeout, not a total one. A wall clock sized for the meshes we had
+        # measured cut a legitimately slower one off at four hours and re-queued
+        # it, so a second copy of a ten-hour job sat behind the copy that was
+        # still running and about to finish. What we actually want to detect is a
+        # hung prompt, and "hung" means no progress -- so the clock resets every
+        # time the server's log advances, and only a genuinely stalled job dies.
+        last_progress = time.time()
+        seen = None
+        while time.time() - last_progress < self.timeout_s:
             h = requests.get(f"{self.url}/history/{prompt_id}", timeout=30).json()
             entry = h.get(prompt_id)
             if entry:
@@ -57,8 +64,23 @@ class ComfyClient:
                     raise RuntimeError(f"ComfyUI workflow error: {json.dumps(status)[:500]}")
                 if entry.get("outputs"):
                     return self._download_outputs(entry["outputs"], out_dir)
+            mark = self._progress_mark()
+            if mark != seen:
+                seen, last_progress = mark, time.time()
             time.sleep(3)
-        raise TimeoutError(f"ComfyUI workflow {prompt_id} not done after {self.timeout_s}s")
+        raise TimeoutError(f"ComfyUI workflow {prompt_id} made no progress for "
+                           f"{self.timeout_s}s")
+
+    def _progress_mark(self) -> str | None:
+        """A cheap fingerprint of server-side progress: the tail of ComfyUI's own
+        log. Sampler steps, node transitions and model loads all move it. None on
+        any failure, which simply means this poll contributes no evidence either
+        way rather than being mistaken for a stall."""
+        try:
+            r = requests.get(f"{self.url}/internal/logs", timeout=15)
+            return r.text[-400:] if r.ok else None
+        except Exception:
+            return None
 
     def _download_outputs(self, outputs: dict, out_dir: Path) -> list[Path]:
         out_dir.mkdir(parents=True, exist_ok=True)

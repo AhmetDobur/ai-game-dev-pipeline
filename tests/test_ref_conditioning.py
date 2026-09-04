@@ -1,5 +1,5 @@
 """Reference-image conditioning: crop, ref_image repair, scaffold environment."""
-from pathlib import Path
+import pytest
 import json
 from pathlib import Path
 
@@ -956,3 +956,63 @@ def test_head_mesh_is_exempt_from_the_standing_figure_check():
     body = {"id": "hero_mesh", "spec": {"prompt": "the character"}}
     head = {"id": "hero_mesh_head", "spec": {"prompt": "the character", "detail": "head"}}
     assert _is_humanoid(body) and not _is_humanoid(head)
+
+
+def test_comfy_wait_resets_its_clock_while_the_server_makes_progress(monkeypatch, tmp_path):
+    """A total wall clock killed a still-running 10h job at 4h and re-queued it,
+    leaving a duplicate behind the copy that was about to finish. Only a prompt
+    that has genuinely stopped moving may time out."""
+    import pipeline.adapters.comfy as comfy_mod
+
+    wf = tmp_path / "wf.json"
+    wf.write_text(json.dumps({"1": {"class_type": "X", "inputs": {}}}))
+    clock = {"t": 0.0}
+    monkeypatch.setattr(comfy_mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + 60))
+    monkeypatch.setattr(comfy_mod.time, "time", lambda: clock["t"])
+
+    polls = {"n": 0}
+
+    class R:
+        def __init__(self, payload=None, text=""):
+            self.payload, self.text, self.ok = payload, text, True
+        def json(self): return self.payload
+        def raise_for_status(self): pass
+
+    def fake_get(url, **kw):
+        if url.endswith("/internal/logs"):
+            return R(text="step %d" % polls["n"])       # server keeps moving
+        polls["n"] += 1
+        if polls["n"] < 30:                             # ~30 min of polling
+            return R({})
+        return R({"pid": {"status": {"status_str": "success"},
+                          "outputs": {"9": {"images": []}}}})
+
+    monkeypatch.setattr(comfy_mod.requests, "get", fake_get)
+    monkeypatch.setattr(comfy_mod.requests, "post", lambda *a, **k: R({"prompt_id": "pid"}))
+    monkeypatch.setattr(comfy_mod.ComfyClient, "_download_outputs", lambda self, o, d: ["ok"])
+
+    # timeout_s is 10 minutes; the loop runs far longer than that in wall clock
+    out = comfy_mod.ComfyClient("http://x", timeout_s=600).run_workflow(wf, {}, tmp_path)
+    assert out == ["ok"] and clock["t"] > 600
+
+
+def test_comfy_wait_still_gives_up_on_a_stalled_prompt(monkeypatch, tmp_path):
+    import pipeline.adapters.comfy as comfy_mod
+
+    wf = tmp_path / "wf.json"
+    wf.write_text(json.dumps({"1": {"class_type": "X", "inputs": {}}}))
+    clock = {"t": 0.0}
+    monkeypatch.setattr(comfy_mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + 60))
+    monkeypatch.setattr(comfy_mod.time, "time", lambda: clock["t"])
+
+    class R:
+        def __init__(self, payload=None, text=""):
+            self.payload, self.text, self.ok = payload, text, True
+        def json(self): return self.payload
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(comfy_mod.requests, "get",
+                        lambda url, **kw: R({}, text="frozen"))   # never advances
+    monkeypatch.setattr(comfy_mod.requests, "post", lambda *a, **k: R({"prompt_id": "pid"}))
+    with pytest.raises(TimeoutError, match="no progress"):
+        comfy_mod.ComfyClient("http://x", timeout_s=600).run_workflow(wf, {}, tmp_path)
