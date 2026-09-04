@@ -15,6 +15,7 @@ _FULL_FRAME = 0.80    # largest blob covers this much -> already single-subject
 _ERODE_PX = 4         # breaks the prop bridges between touching figures
 _MIN_RELATIVE_SIZE = 0.15   # a second hero is a sizeable fraction of the first
 _MIN_FIGURE_ASPECT = 1.3    # standing characters are taller than they are wide
+_MIN_MASK_COVERAGE = 0.05   # below this the matte failed; the frame IS the subject
 
 
 def _background_color(px, w: int, h: int) -> tuple[int, int, int]:
@@ -131,6 +132,17 @@ def crop_main_subject(src: Path, dst: Path, index: int = 0) -> Path:
     figures = _subjects(mask)
     if not figures:
         return src  # nothing detected — don't guess
+    # A matte that covers almost nothing has failed, it has not found a small
+    # subject. rembg segments salient objects and people, so an interior or a
+    # landscape returns near-empty: the library reference matted to 1.7% of the
+    # frame and would have been cropped from 1672x941 down to a 323px fragment
+    # and rebuilt as that fragment. When the mask is that thin the whole image
+    # is the subject.
+    if figures[0][0] < _MIN_MASK_COVERAGE * sw * sh:
+        print(f"[refimage] {Path(src).name}: foreground is only "
+              f"{figures[0][0] / (sw * sh):.1%} of the frame — using the whole image",
+              flush=True)
+        return src
     if index >= len(figures):
         print(f"[refimage] {Path(src).name}: asked for figure {index}, found "
               f"{len(figures)} — using the largest", flush=True)

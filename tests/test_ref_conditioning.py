@@ -1,4 +1,5 @@
 """Reference-image conditioning: crop, ref_image repair, scaffold environment."""
+from pathlib import Path
 import json
 from pathlib import Path
 
@@ -895,3 +896,23 @@ def test_unknown_dependency_is_resolved_or_dropped_not_fatal():
     deps = next(t for t in tasks if t["id"] == "char_0_anim")["depends_on"]
     assert "char_0_mesh" in deps
     assert "character_0_mesh" not in deps and "totally_unrelated_xyz" not in deps
+
+
+def test_a_near_empty_matte_falls_back_to_the_whole_image(tmp_path, monkeypatch):
+    """rembg segments salient objects; an interior returns almost nothing.
+
+    Cropping to that near-empty matte turned a 1672x941 library photo into a
+    323px fragment, and the mesh would have been built from the fragment.
+    """
+    from PIL import Image
+    from pipeline import refimage
+
+    src = tmp_path / "interior.png"
+    Image.new("RGB", (400, 200), (90, 90, 100)).save(src)
+    # a matte that finds a 10x10 speck: 0.25% of the frame, far below the floor
+    monkeypatch.setattr(refimage, "_foreground_mask",
+                        lambda img: [[20 <= x < 30 and 20 <= y < 30
+                                      for x in range(img.size[0])]
+                                     for y in range(img.size[1])])
+    out = refimage.crop_main_subject(src, tmp_path / "out.png", 0)
+    assert Path(out).resolve() == src.resolve(), "a failed matte must not crop"
