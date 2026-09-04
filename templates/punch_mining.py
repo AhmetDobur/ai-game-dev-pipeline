@@ -255,40 +255,56 @@ def mine(tracks, fps=30):
     return found
 
 
-# The moveset the game asks for, expressed as what to look for in the mined set.
-# A jab is the lead (left) hand going straight to the head; a cross is the same
-# shape from the rear hand. Where an exact match is missing from a trial the
-# fallbacks degrade along the axis that matters least: a head hook still reads
-# as a cross far better than an uppercut does.
+# Picking a move is a ranking problem, not a labelling one.
+#
+# Absolute thresholds were the first attempt and they do not survive contact
+# with real data: on CMU 13_17 they called 57 of 109 punches "uppercut", because
+# what counts as a big rise or a level shot depends on the performer's
+# proportions and on how they happened to be standing. What is stable is the
+# ORDER. Every boxing trial contains straighter and loopier punches, higher and
+# lower ones; the straightest lead-hand punch in a trial is a jab whatever the
+# skeleton's dimensions, and the one that climbs the most is an uppercut.
+#
+# So each move scores the mined pool and takes the best example. Scores mix the
+# defining quality with reach, because between two equally uppercut-shaped
+# punches the more committed one reads better on a character whose proportions
+# differ from the performer's. Every score is in torso units already, so the
+# weights compare like with like.
 MOVESET = {
-    "jab":             [("left", "straight", "head"), ("left", "straight", "mid")],
-    "cross":           [("right", "straight", "head"), ("right", "straight", "mid")],
-    "overhand":        [("right", "overhand", None), ("right", "hook", "head")],
-    "left_uppercut":   [("left", "uppercut", None)],
-    "right_uppercut":  [("right", "uppercut", None)],
-    "left_bodyshot":   [("left", "straight", "body"), ("left", "hook", "body"),
-                        ("left", None, "body")],
-    "left_hook":       [("left", "hook", None)],
-    "right_hook":      [("right", "hook", None)],
+    # straight to the head: far, level, no climb, no bow
+    "jab":            ("left",  lambda p: p["reach"] - 2.0 * abs(p["rise"])
+                                          - 1.5 * p["arc"] - 1.0 * abs(p["height"])),
+    "cross":          ("right", lambda p: p["reach"] - 2.0 * abs(p["rise"])
+                                          - 1.5 * p["arc"] - 1.0 * abs(p["height"])),
+    # over the top: crests above the target and falls onto it
+    "overhand":       ("right", lambda p: 2.0 * p["drop"] + p["reach"]
+                                          - 1.0 * abs(p["height"])),
+    "left_uppercut":  ("left",  lambda p: 2.0 * p["rise"] + p["reach"]),
+    "right_uppercut": ("right", lambda p: 2.0 * p["rise"] + p["reach"]),
+    # to the ribs: the lowest impact this hand threw
+    "left_bodyshot":  ("left",  lambda p: -2.0 * p["height"] + p["reach"] - p["arc"]),
+    "right_bodyshot": ("right", lambda p: -2.0 * p["height"] + p["reach"] - p["arc"]),
+    "left_hook":      ("left",  lambda p: 2.0 * p["arc"] + p["reach"]),
+    "right_hook":     ("right", lambda p: 2.0 * p["arc"] + p["reach"]),
 }
 
 
-def select(punches, move, variant=0):
-    """Pick one mined punch for a named move, or None.
+def rank(punches, move):
+    """Every punch that hand threw, best example of `move` first."""
+    entry = MOVESET.get(move)
+    if not entry:
+        return []
+    hand, score = entry
+    return sorted((p for p in punches if p["hand"] == hand),
+                  key=score, reverse=True)
 
-    Preference order inside a tier is by reach: the most committed example of a
-    move looks the most deliberate on a character whose proportions differ from
-    the performer's. `variant` walks further down that list so a combo's second
-    jab is a different take of a jab rather than the same clip replayed.
+
+def select(punches, move, variant=0):
+    """One mined punch for a named move, or None if that hand threw nothing.
+
+    `variant` walks down the ranking, so a combo whose second beat is another
+    jab gets a different take rather than the same clip replayed -- the thing
+    the moveset spec calls out as never looking identical twice.
     """
-    for hand, kind, target in MOVESET.get(move, []):
-        tier = [p for p in punches
-                if p["hand"] == hand
-                and (kind is None or p["kind"] == kind)
-                and (target is None or p["target"] == target)]
-        if tier:
-            # most committed example first: reach for everything except an
-            # uppercut, which is defined by how far it climbs, not how far out
-            tier.sort(key=lambda p: -(p["rise"] if kind == "uppercut" else p["reach"]))
-            return tier[variant % len(tier)]
-    return None
+    tier = rank(punches, move)
+    return tier[variant % len(tier)] if tier else None

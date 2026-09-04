@@ -73,8 +73,38 @@ def test_a_rising_punch_is_an_uppercut_not_a_jab():
     left = _trial(_throw((-0.15, 0.12, -0.20), (-0.05, 0.50, 0.12)))
     punches = mine(_tracks(left=left), FPS)
     assert punches and punches[0]["kind"] == "uppercut"
-    assert select(punches, "left_uppercut") is punches[0]
-    assert select(punches, "jab") is None
+
+
+def test_each_move_picks_its_own_exemplar_out_of_a_mixed_trial():
+    """The real job: one trial holds every punch the performer threw, and each
+    move has to come back with the right one."""
+    left = _trial(
+        _throw(GUARD, (-0.05, 0.62, 0.04)),                    # straight, level
+        _throw((-0.15, 0.12, -0.22), (-0.05, 0.52, 0.14)),     # climbs
+        _throw((-0.15, 0.12, 0.02), (-0.05, 0.56, -0.20)),     # to the ribs
+        _throw(GUARD, (-0.05, 0.55, 0.04), lat_bow=0.30),      # bows out
+    )
+    punches = mine(_tracks(left=left), FPS)
+    assert len(punches) == 4, [p["name"] for p in punches]
+    order = {id(p): i for i, p in enumerate(punches)}
+    assert order[id(select(punches, "jab"))] == 0
+    assert order[id(select(punches, "left_uppercut"))] == 1
+    assert order[id(select(punches, "left_bodyshot"))] == 2
+    assert order[id(select(punches, "left_hook"))] == 3
+
+
+def test_variant_walks_the_ranking_so_a_repeat_is_a_different_take():
+    left = _trial(_throw(GUARD, (-0.05, 0.62, 0.04)),
+                  _throw(GUARD, (-0.06, 0.58, 0.03)))
+    punches = mine(_tracks(left=left), FPS)
+    assert len(punches) == 2
+    assert select(punches, "jab", 0) is not select(punches, "jab", 1)
+
+
+def test_select_returns_none_when_that_hand_threw_nothing():
+    punches = mine(_tracks(left=_trial(_throw(GUARD, (-0.05, 0.62, 0.04)))), FPS)
+    assert select(punches, "jab") is not None
+    assert select(punches, "cross") is None        # right hand never moved
 
 
 def test_a_descending_punch_to_the_ribs_is_a_body_shot_not_an_overhand():
@@ -84,7 +114,6 @@ def test_a_descending_punch_to_the_ribs_is_a_body_shot_not_an_overhand():
     punches = mine(_tracks(left=left), FPS)
     assert punches and punches[0]["target"] == "body"
     assert punches[0]["kind"] != "overhand"
-    assert select(punches, "left_bodyshot") is punches[0]
 
 
 def test_a_punch_that_crests_overhead_and_falls_is_an_overhand():
@@ -94,7 +123,6 @@ def test_a_punch_that_crests_overhead_and_falls_is_an_overhand():
         right += [_world((0.10, r, z))] * 2
     punches = mine(_tracks(right=[_world(GUARD)] * 6 + right + [_world(GUARD)] * 6), FPS)
     assert punches and punches[0]["kind"] == "overhand"
-    assert select(punches, "overhand") is punches[0]
 
 
 def test_hand_separation_and_ordering():
@@ -120,4 +148,7 @@ def test_missing_joints_yield_nothing_rather_than_a_guess():
 def test_every_requested_move_has_a_lookup_rule():
     for move in ("jab", "cross", "overhand", "left_uppercut",
                  "right_uppercut", "left_bodyshot"):
-        assert MOVESET[move], f"{move} has no selection rule"
+        hand, score = MOVESET[move]
+        assert hand in ("left", "right")
+        assert score({"reach": 1.0, "rise": 0.0, "drop": 0.0,
+                      "arc": 0.0, "height": 0.0}) is not None
