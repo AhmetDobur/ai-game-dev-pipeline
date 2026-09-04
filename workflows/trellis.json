@@ -133,7 +133,7 @@
   "14": {
     "class_type": "VaeDecodeStructureTrellis2",
     "inputs": {
-      "resolution": "32",
+      "resolution": "64",
       "samples": [
         "13",
         0
@@ -191,7 +191,7 @@
   "17": {
     "class_type": "Trellis2UpsampleStage",
     "inputs": {
-      "target_resolution": 2048,
+      "target_resolution": 1024,
       "positive": [
         "15",
         0
@@ -314,7 +314,7 @@
   "23": {
     "class_type": "RemeshMesh",
     "inputs": {
-      "resolution": 1024,
+      "resolution": 512,
       "band": 1.0,
       "project_back": 0.0,
       "fix_poles": true,
@@ -368,7 +368,7 @@
   "27": {
     "class_type": "BakeTextureFromVoxel",
     "inputs": {
-      "texture_size": 4096,
+      "texture_size": 2048,
       "mesh": [
         "26",
         0
