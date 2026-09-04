@@ -1,9 +1,10 @@
 """Cutting named punches out of continuous boxing mocap.
 
-The synthetic performer below stands at the origin facing -Y: hips at z=0,
-chest at z=1 (so torso == 1.0 and every threshold reads directly as a
-fraction), shoulders on the x axis. A hand at body-local (lateral, reach,
-height) is therefore at world (lateral, -reach, 1 + height).
+The synthetic performer below stands at the origin facing +Y: hips at z=0,
+shoulder joints at z=1 either side of x=0, so the frame origin is the shoulder
+midpoint, torso == 1.0 and every threshold reads directly as a fraction. A hand
+at body-local (lateral, reach, height) is therefore at world
+(lateral, reach, 1 + height).
 """
 import math
 
@@ -14,14 +15,13 @@ FPS = 30
 
 def _rig(n):
     return {"Hips": [(0.0, 0.0, 0.0)] * n,
-            "Spine1": [(0.0, 0.0, 1.0)] * n,
-            "LeftShoulder": [(-0.2, 0.0, 0.95)] * n,
-            "RightShoulder": [(0.2, 0.0, 0.95)] * n}
+            "LeftArm": [(-0.2, 0.0, 1.0)] * n,
+            "RightArm": [(0.2, 0.0, 1.0)] * n}
 
 
 def _world(local):
     lat, reach, h = local
-    return (lat, -reach, 1.0 + h)
+    return (lat, reach, 1.0 + h)
 
 
 def _throw(guard, impact, hold=6, lat_bow=0.0):
@@ -113,7 +113,7 @@ def test_a_guard_fidget_is_not_a_punch():
 
 
 def test_missing_joints_yield_nothing_rather_than_a_guess():
-    assert mine({"LeftHand": [(0, 0, 0)] * 20}, FPS) == []
+    assert mine({"LeftHand": [(0, 0, 0)] * 20}, FPS) == []   # no arms, no frame
     assert mine({}, FPS) == []
 
 

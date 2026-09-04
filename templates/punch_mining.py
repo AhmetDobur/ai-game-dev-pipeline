@@ -50,43 +50,58 @@ def _norm(a):
     return (a[0] / m, a[1] / m, a[2] / m) if m > 1e-9 else (0.0, 0.0, 0.0)
 
 
-def body_frame(chest, left_shoulder, right_shoulder, hips):
-    """An orthonormal (right, forward, up) triple for one frame of the performer.
+def body_frame(left_arm, right_arm, hips):
+    """Origin and an orthonormal (right, forward, up) triple for one frame.
 
-    `up` runs hips->chest rather than world Z, so a boxer slipping or ducking is
-    still described relative to their own spine; `right` comes off the shoulder
-    line, and `forward` is whatever completes the basis. Returns None when the
-    joints are degenerate, which happens on a few malformed frames.
+    The origin is the midpoint of the two shoulder JOINTS, which is where
+    punches actually start, and it makes "above the origin" mean "at head
+    height" without any further calibration. `up` runs hips->shoulders rather
+    than world Z, so a boxer slipping or ducking is still described relative to
+    their own spine.
+
+    The shoulder line comes from LeftArm/RightArm and not from
+    LeftShoulder/RightShoulder: in a CMU skeleton those two are clavicles whose
+    HEADS sit on the spine, 0.000 units apart, so using them produced a
+    degenerate basis and silently zeroed every track. LeftArm/RightArm heads are
+    the real shoulder joints, 6.96 units apart on the same performer.
+
+    Returns None when the joints are degenerate on a malformed frame.
     """
-    up = _norm(_sub(chest, hips))
-    right = _norm(_sub(right_shoulder, left_shoulder))
+    origin = tuple((a + b) / 2 for a, b in zip(left_arm, right_arm))
+    up = _norm(_sub(origin, hips))
+    right = _norm(_sub(right_arm, left_arm))
     if not any(up) or not any(right):
         return None
-    forward = _norm(_cross(right, up))
+    # forward = up x right, NOT right x up. A performer facing +Y with up +Z has
+    # right +X, and (0,0,1) x (1,0,0) = +Y; the other order points out of their
+    # back, which made every measured reach on real mocap come out negative.
+    forward = _norm(_cross(up, right))
     if not any(forward):
         return None
-    right = _norm(_cross(up, forward))     # re-orthogonalise against a leaning spine
-    return right, forward, up
+    right = _norm(_cross(forward, up))   # re-orthogonalise against a leaning spine
+    return origin, right, forward, up
 
 
-def local_track(hand, chest, left_shoulder, right_shoulder, hips):
+def local_track(hand, left_arm, right_arm, hips):
     """One hand's path in body-local coordinates: (lateral, reach, height).
 
     Frames whose basis could not be built inherit the previous one, so a single
-    bad frame does not punch a hole in the middle of a trajectory.
+    bad frame does not punch a hole in the middle of a trajectory. The returned
+    scale is the mean hips->shoulders distance, which every threshold in this
+    module is expressed as a fraction of.
     """
     out, torso, last = [], [], None
     for i in range(len(hand)):
-        f = body_frame(chest[i], left_shoulder[i], right_shoulder[i], hips[i]) or last
+        f = body_frame(left_arm[i], right_arm[i], hips[i]) or last
         if f is None:
             out.append((0.0, 0.0, 0.0))
             torso.append(1.0)
             continue
         last = f
-        right, forward, up = f
-        d = _sub(hand[i], chest[i])
+        origin, right, forward, up = f
+        d = _sub(hand[i], origin)
         out.append((_dot(d, right), _dot(d, forward), _dot(d, up)))
-        t = math.sqrt(_dot(_sub(chest[i], hips[i]), _sub(chest[i], hips[i])))
+        t = math.sqrt(_dot(_sub(origin, hips[i]), _sub(origin, hips[i])))
         torso.append(t if t > 1e-6 else 1.0)
     return out, sum(torso) / max(len(torso), 1)
 
@@ -218,7 +233,7 @@ def mine(tracks, fps=30):
     joints mean this is not a trial we can read, and an empty list sends the
     caller back to its existing behaviour rather than inventing a window.
     """
-    need = ("LeftHand", "RightHand", "Spine1", "LeftShoulder", "RightShoulder", "Hips")
+    need = ("LeftHand", "RightHand", "LeftArm", "RightArm", "Hips")
     if not all(tracks.get(b) for b in need):
         return []
     n = min(len(tracks[b]) for b in need)
@@ -226,9 +241,8 @@ def mine(tracks, fps=30):
         return []
     found = []
     for hand, bone in (("left", "LeftHand"), ("right", "RightHand")):
-        track, torso = local_track(tracks[bone][:n], tracks["Spine1"][:n],
-                                   tracks["LeftShoulder"][:n],
-                                   tracks["RightShoulder"][:n], tracks["Hips"][:n])
+        track, torso = local_track(tracks[bone][:n], tracks["LeftArm"][:n],
+                                   tracks["RightArm"][:n], tracks["Hips"][:n])
         found.extend(mine_hand(track, torso, hand, fps))
     found.sort(key=lambda p: p["impact"])
     return found
