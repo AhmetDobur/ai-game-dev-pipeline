@@ -984,6 +984,17 @@ def loop_blend(track, fraction=_BLEND_FRACTION):
         quats[-1] = first.copy()
 
 
+# Arms out along X: the one pose both a mocap skeleton and a rig fitted to
+# hanging-armed concept art can be put into, so their bones can be compared.
+# Everything not listed keeps its own rest direction, which for a spine, a leg
+# or a head already agrees between any two humanoid rigs.
+T_POSE_REF = {
+    "leftshoulder": (1.0, 0.0, 0.0), "leftarm": (1.0, 0.0, 0.0),
+    "leftforearm": (1.0, 0.0, 0.0), "lefthand": (1.0, 0.0, 0.0),
+    "rightshoulder": (-1.0, 0.0, 0.0), "rightarm": (-1.0, 0.0, 0.0),
+    "rightforearm": (-1.0, 0.0, 0.0), "righthand": (-1.0, 0.0, 0.0),
+}
+
 def retarget_onto(arm, bvh_path, clip_name=""):
     """Sample a BVH and copy its per-bone local rotation onto `arm` (the armature the
     mesh is actually skinned to) by matching bone names. Returns the number of bones
@@ -1017,21 +1028,32 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # by the performer walking up, waiting and walking off; keyframing the
         # raw range gave a twenty-second "walk" that never looped.
         # Put each of our bones where the source's bone actually is, composing
-        # down the hierarchy.
+        # down the hierarchy, having first put both rigs in a common pose.
         #
-        # The two rigs do not share a rest pose: CMU's is a T-pose, and the rig
-        # fitted to this mesh has the arms hanging at the sides, because that is
-        # how the character was drawn. Copying matrix_basis across bent him
-        # double at the waist. Matching the DELTA from each rest pose instead
-        # stands him up, but then applies the T-pose-to-hanging drop a second
-        # time and the arms flare out and up. Neither is right, because the
-        # question is not "what did their arm do" but "where is their arm".
+        # The two rigs do not share a rest pose. CMU's is a T-pose; the rig
+        # fitted to this mesh has the arms hanging, because that is how the
+        # character was drawn. Copying matrix_basis across bent him double at
+        # the waist. Matching each rig's delta from its own rest stood him up
+        # but applied CMU's T-pose-to-hanging arm drop a second time to arms
+        # that already hang, so they flared out. Matching the source's absolute
+        # orientation fixes the arms and breaks the spine instead, because the
+        # hips bone does not point the same way in the two skeletons and the
+        # difference lands on the whole body as a forward pitch.
         #
-        # So take the source bone's orientation in armature space and solve for
-        # the local rotation that puts ours there. Blender composes a posed bone
-        # as  W = W_parent . Rl . b  (Rl being its rest rotation relative to its
-        # parent), so  b = (W_parent . Rl)^-1 . W. Parents must be solved first,
-        # which is what the depth sort is for.
+        # Both failures are the same missing piece: a shared frame of
+        # reference. So normalise each rig to a T-pose reference first --
+        # identical for both, arms out along X -- and take the fixed offset
+        # between the two references as the correction. A source bone sitting
+        # at its own rest then puts our bone at OUR rest, whatever either rest
+        # happens to be, which is the property both earlier attempts lacked.
+        def ref_rot(bone, want, into):
+            """Bone's rest orientation, swung onto `want` if it is overridden."""
+            q = (into @ bone.matrix_local).to_quaternion()
+            if want is None:
+                return q
+            have = (q @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
+            return have.rotation_difference(mathutils.Vector(want)) @ q
+
         rest_t = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
         parent_of = {b.name: (b.parent.name if b.parent else None)
                      for b in arm.pose.bones}
@@ -1039,23 +1061,33 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         depth = {b.name: len(b.parent_recursive) for b in arm.pose.bones}
         order = sorted(pair_map, key=lambda n: depth[n])
         to_arm = arm.matrix_world.inverted()
+        src_to_arm = to_arm @ src.matrix_world
+        ident = mathutils.Matrix.Identity(4)
 
-        rel_rest = {}
+        corr, rel_rest = {}, {}
         for tname in order:
+            want = T_POSE_REF.get(tname.lower())
+            rs = ref_rot(src.pose.bones[pair_map[tname]].bone, want, src_to_arm)
+            rt = ref_rot(arm.pose.bones[tname].bone, want, ident)
+            corr[tname] = rs.inverted() @ rt
             par = parent_of[tname]
             rel_rest[tname] = (rest_t[par].inverted() @ rest_t[tname]) if par \
                 else rest_t[tname]
 
+        # Blender composes a posed bone as  W = W_parent . Rl . b, so the local
+        # rotation that lands it on the orientation we want is
+        # (W_parent . Rl)^-1 . W. Parents have to be solved first: that is what
+        # the depth sort above is for.
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
             bpy.context.scene.frame_set(f)
             world = {}
             for tname in order:
                 sb = src.pose.bones[pair_map[tname]]
-                world[tname] = (to_arm @ src.matrix_world @ sb.matrix).to_quaternion()
+                world[tname] = (src_to_arm @ sb.matrix).to_quaternion() @ corr[tname]
             for tname in order:
                 par = parent_of[tname]
-                # an unmatched parent (the cloak root, say) stays at its rest
+                # an unmatched parent (a cloak root, say) stays at its rest
                 wp = world.get(par, rest_t[par]) if par else \
                     mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
                 track[tname].append((wp @ rel_rest[tname]).inverted() @ world[tname])
