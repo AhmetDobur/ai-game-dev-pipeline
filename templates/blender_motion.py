@@ -1369,11 +1369,17 @@ _L, _R = (-1.0, 0.0, 0.0), (1.0, 0.0, 0.0)
 
 
 def _dir(*parts):
-    """Blend named directions by weight: _dir((_F, 2), (_D, 1)) is forward-down."""
-    v = mathutils.Vector((0.0, 0.0, 0.0))
-    for d, w in parts:
-        v += mathutils.Vector(d) * w
-    return tuple(v.normalized())
+    """Blend named directions by weight: _dir((_F, 2), (_D, 1)) is forward-down.
+
+    Plain arithmetic rather than mathutils, because the moveset table below is
+    built at import time and this module is imported outside Blender by the
+    tests.
+    """
+    x = sum(d[0] * w for d, w in parts)
+    y = sum(d[1] * w for d, w in parts)
+    z = sum(d[2] * w for d, w in parts)
+    n = math.sqrt(x * x + y * y + z * z) or 1.0
+    return (x / n, y / n, z / n)
 
 
 def _guard(sx):
