@@ -370,14 +370,17 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
     return arm
 
 
-# Cloth radius around each arm bone, as a fraction of body height. Anatomical
-# limb radius plus a generous allowance for a heavy sleeve -- stripping a real
-# sleeve off the arm would look worse than leaving a little cloth on it.
-_SLEEVE = {"Arm": 0.055, "ForeArm": 0.045, "Hand": 0.035}
+# Cloth radius around each limb bone, as a fraction of body height. Anatomical
+# limb radius plus a generous allowance for a heavy sleeve or a boot -- stripping
+# a real sleeve off the arm would look worse than leaving a little cloth on it.
+# Legs get more room than arms because trousers and boots genuinely are part of
+# the leg and have to keep striding with it.
+_SLEEVE = {"Arm": 0.055, "ForeArm": 0.045, "Hand": 0.035,
+           "UpLeg": 0.080, "Leg": 0.065, "Foot": 0.055}
 
 
 def trim_sleeves(mesh_obj, arm, sleeve=1.0):
-    """Keep each arm to its own sleeve and give the rest of the coat to the cloak.
+    """Keep each limb to its own sleeve and give the rest of the coat to the cloak.
 
     Bone heat is solved on the garment's outer shell, so wherever an arm hangs
     inside a coat the nearest bone to a whole panel of cloth is that arm. At
@@ -386,8 +389,12 @@ def trim_sleeves(mesh_obj, arm, sleeve=1.0):
     character the hand bone alone owned 8,560 vertices spanning hip height, and
     the arms between them held half the mesh.
 
-    A vertex belongs to an arm only if it lies within a sleeve's radius of that
-    arm's own bone. Anything beyond that is cloth hanging off the torso and goes
+    The legs had the same fault and it is what made the walk read wrong: the
+    skirt of a long coat was weighted to the thighs, so it split down the middle
+    and strode like a pair of trousers instead of hanging and swinging.
+
+    A vertex belongs to a limb only if it lies within a sleeve's radius of that
+    limb's own bone. Anything beyond that is cloth hanging off the torso and goes
     to the cloak chain, where the cloth solver drives it instead. The radius is
     stated in upper-arm lengths so it scales with the rig rather than the scene,
     and it is deliberately generous: a heavy coat sleeve is much thicker than
