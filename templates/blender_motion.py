@@ -875,13 +875,29 @@ def clip_window(track, clip_name, n):
         # An idle is not a gait. The period detector finds a half-second twitch
         # in a standing trial and loops that, which is the fidget the character
         # was doing rather than the character standing. Take one BREATH instead,
-        # from the calmest stretch of the trial, and let breathe() carry it.
+        # and let breathe() carry it.
+        #
+        # Calm is not enough on its own: the calmest stretch of a trial can be
+        # the performer resting in a deep wide crouch, and retargeting that
+        # faithfully gave a character squatting like a sumo with his coat draped
+        # over his knees. The knee's local rotation IS its bend, because the rig
+        # rests straight-legged, so score uprightness alongside stillness.
         span = min(n - 1, int(_BREATH_SECONDS * FPS))
-        best_a, best_e = 0, float("inf")
+        knees = [track[k] for k in ("LeftLeg", "RightLeg") if k in track]
+
+        def crouch(a, b):
+            if not knees:
+                return 0.0
+            angs = [2.0 * math.acos(min(1.0, abs(q[0])))
+                    for k in knees for q in k[a:b]]
+            return sum(angs) / max(1, len(angs))
+
+        best_a, best_score = 0, float("inf")
         for a in range(0, max(1, n - span), max(1, span // 8)):
-            e = _motion_energy(track, a, a + span)
-            if e < best_e:
-                best_a, best_e = a, e
+            # crouch dominates: a still squat is not an idle, a breathing stand is
+            score = _motion_energy(track, a, a + span) + 4.0 * crouch(a, a + span)
+            if score < best_score:
+                best_a, best_score = a, score
         return best_a, best_a + span
     if is_cyclic(clip_name):
         period = _gait_period(track, n)
