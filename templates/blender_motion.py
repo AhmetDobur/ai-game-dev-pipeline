@@ -1049,6 +1049,20 @@ def basis_toward(want):
     return mathutils.Matrix((y.cross(z), y, z)).transposed().to_quaternion()
 
 
+def aim_world(rest_q, want):
+    """World rotation that points a bone's rest direction at `want`.
+
+    A direction does not determine a rotation -- the roll about the bone axis
+    is still free -- so the obvious construction (build a basis from `want` and
+    some reference up-vector) silently invents a roll. On a torso that reads as
+    the character spinning on the spot, and on an upper arm it turns the plane
+    the elbow bends in. The minimal rotation from rest to `want` adds no twist
+    at all, so every bone keeps the roll its rest pose gave it.
+    """
+    d = rest_q @ mathutils.Vector((0.0, 1.0, 0.0))
+    return d.rotation_difference(mathutils.Vector(want).normalized()) @ rest_q
+
+
 def solve_local(arm, world_rots):
     """Local rotations that put each named bone at the given world orientation.
 
@@ -1066,9 +1080,10 @@ def solve_local(arm, world_rots):
         par = parent[name]
         wp = world[par] if par else mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
         rl = (rest[par].inverted() @ rest[name]) if par else rest[name]
-        world[name] = world_rots.get(name) or (wp @ rl)
+        rest_world = wp @ rl
+        world[name] = world_rots.get(name, rest_world)
         if name in world_rots:
-            out[name] = (wp @ rl).inverted() @ world[name]
+            out[name] = rest_world.inverted() @ world[name]
     return out
 
 
@@ -1517,21 +1532,34 @@ def authored_clip(arm, clip, moveset):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode="POSE")
     n = max(2, int(spec["seconds"] * FPS))
+    rest_w = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
+    ident = mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
+    frames, track = [], {}
     for t, dirs in spec["keys"]:
-        f = int(round(t * n))
-        want = {b: basis_toward(d) for b, d in dirs.items()
+        frames.append(int(round(t * n)))
+        want = {b: aim_world(rest_w[b], d) for b, d in dirs.items()
                 if b in arm.pose.bones}
         local = solve_local(arm, want)
-        for name, pb in ((b.name, b) for b in arm.pose.bones):
-            if any(k in name.lower()
+        for pb in arm.pose.bones:
+            if any(k in pb.name.lower()
                    for k in ("tail", "jaw", "wing", "cloak", "cape")):
                 continue        # procedural_extras owns these, in euler
-            pb.rotation_mode = "QUATERNION"
-            pb.rotation_quaternion = local.get(
-                name, mathutils.Quaternion((1.0, 0.0, 0.0, 0.0)))
+            track.setdefault(pb.name, []).append(local.get(pb.name, ident))
+
+    # Blender interpolates a quaternion's four channels as four independent
+    # F-curves rather than slerping them. Two consecutive keys in opposite
+    # hemispheres describe the same two poses but blend the long way round, and
+    # the character visibly tumbles flat between them -- which is exactly what
+    # the first render of these moves did on every contact frame.
+    align_signs(track)
+
+    for name, quats in track.items():
+        pb = arm.pose.bones[name]
+        pb.rotation_mode = "QUATERNION"
+        for f, q in zip(frames, quats):
+            pb.rotation_quaternion = q
             pb.keyframe_insert("rotation_quaternion", frame=f)
-            if f == 0:
-                pb.keyframe_insert("rotation_mode", frame=f)
+        pb.keyframe_insert("rotation_mode", frame=0)
     bpy.ops.object.mode_set(mode="OBJECT")
     print(f"[motion] {clip}: authored {moveset} move "
           f"({n} frames, {spec['seconds']:.2f}s)")
