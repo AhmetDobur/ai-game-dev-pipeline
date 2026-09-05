@@ -355,8 +355,91 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
                 if any(g.weight > 1e-6 for g in v.groups))
         print(f"[motion] bone heat bound {n}/{len(mesh_obj.data.vertices)} verts")
     if cloaks:
+        # order matters: take the coat off the arms first, then hand the
+        # back-hanging geometry down the chain
+        trim_sleeves(mesh_obj, arm)
         paint_cloak(mesh_obj, arm)
     return arm
+
+
+def trim_sleeves(mesh_obj, arm, sleeve=0.38):
+    """Keep each arm to its own sleeve and give the rest of the coat to the cloak.
+
+    Bone heat is solved on the garment's outer shell, so wherever an arm hangs
+    inside a coat the nearest bone to a whole panel of cloth is that arm. At
+    rest it looks perfect -- the panel is exactly where it should be -- and then
+    the character throws a punch and the entire coat goes with his fist. On this
+    character the hand bone alone owned 8,560 vertices spanning hip height, and
+    the arms between them held half the mesh.
+
+    A vertex belongs to an arm only if it lies within a sleeve's radius of that
+    arm's own bone. Anything beyond that is cloth hanging off the torso and goes
+    to the cloak chain, where the cloth solver drives it instead. The radius is
+    stated in upper-arm lengths so it scales with the rig rather than the scene,
+    and it is deliberately generous: a heavy coat sleeve is much thicker than
+    the arm inside it, and stripping a real sleeve off the arm would be a worse
+    failure than leaving a little cloth on it.
+    """
+    to_local = mesh_obj.matrix_world.inverted() @ arm.matrix_world
+    limbs = []
+    for side in ("Left", "Right"):
+        upper = arm.data.bones.get(f"{side}Arm")
+        if upper is None:
+            continue
+        radius = sleeve * (to_local @ upper.tail_local
+                           - to_local @ upper.head_local).length
+        for part in ("Arm", "ForeArm", "Hand"):
+            b = arm.data.bones.get(f"{side}{part}")
+            if b is not None and mesh_obj.vertex_groups.get(b.name):
+                limbs.append((b.name, to_local @ b.head_local,
+                              to_local @ b.tail_local, radius))
+    if not limbs:
+        return
+
+    chain = sorted((b for b in arm.data.bones if b.name.startswith("Cloak")),
+                   key=lambda b: -(to_local @ b.head_local).z)
+    if chain:
+        spans = [((to_local @ b.head_local).z, (to_local @ b.tail_local).z, b.name)
+                 for b in chain]
+    else:                                   # no cloak rig: park it on the chest
+        fallback = next((n for n in ("Spine1", "Spine", "Hips")
+                         if arm.data.bones.get(n)), None)
+        if fallback is None:
+            return
+        spans = [(0.0, 0.0, fallback)]
+    groups = {name: (mesh_obj.vertex_groups.get(name)
+                     or mesh_obj.vertex_groups.new(name=name))
+              for _, _, name in spans}
+
+    moved = 0
+    for v in mesh_obj.data.vertices:
+        shed = 0.0
+        for name, head, tail, radius in limbs:
+            g = next((g for g in v.groups
+                      if mesh_obj.vertex_groups[g.group].name == name), None)
+            if g is None or g.weight <= 1e-3:
+                continue
+            if _seg_distance(v.co, head, tail) <= radius:
+                continue                    # inside the sleeve: genuinely arm
+            shed += g.weight
+            mesh_obj.vertex_groups[name].add([v.index], 0.0, "REPLACE")
+        if shed <= 1e-3:
+            continue
+        seg = min(spans, key=lambda s: abs((s[0] + s[1]) / 2 - v.co.z))[2]
+        have = next((g.weight for g in v.groups
+                     if mesh_obj.vertex_groups[g.group].name == seg), 0.0)
+        groups[seg].add([v.index], min(1.0, have + shed), "REPLACE")
+        moved += 1
+    print(f"[motion] sleeves: {moved} coat verts taken off the arms")
+
+
+def _seg_distance(p, head, tail):
+    d = tail - head
+    length_sq = d.dot(d)
+    if length_sq < 1e-12:
+        return (p - head).length
+    t = max(0.0, min(1.0, (p - head).dot(d) / length_sq))
+    return (p - (head + d * t)).length
 
 
 def paint_cloak(mesh_obj, arm, reach=0.55, strength=0.9):
