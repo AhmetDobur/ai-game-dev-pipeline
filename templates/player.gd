@@ -60,7 +60,8 @@ func _ready() -> void:
 	var skel := find_child("Skeleton3D", true, false) as Skeleton3D
 	if skel:
 		_cloak = CloakPhysics.new()
-		add_child(_cloak)
+		# a SkeletonModifier3D only runs when it is a child of the skeleton
+		skel.add_child(_cloak)
 		_cloak.setup(skel)
 		# a landed punch throws the shoulders, and cloth that ignores the hit
 		# is the moment the illusion drops

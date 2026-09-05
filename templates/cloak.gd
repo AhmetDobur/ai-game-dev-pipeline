@@ -1,4 +1,4 @@
-extends Node
+extends SkeletonModifier3D
 class_name CloakPhysics
 
 # Verlet cloth on the cloak bone chain the rig builds (Cloak.0 .. Cloak.N).
@@ -14,6 +14,14 @@ class_name CloakPhysics
 # cloth is unaffected by how the character is oriented -- solving in the
 # skeleton's local space makes gravity rotate with the character, and the cloak
 # swings outward when you turn instead of hanging down.
+#
+# This is a SkeletonModifier3D rather than a plain Node because the write has to
+# happen AFTER the AnimationPlayer has posed the skeleton. As an ordinary node
+# writing from _physics_process it produced correct cloth that was overwritten
+# by the animation every single frame, so it may as well not have run -- the
+# cloak the player saw was whatever the baked clip said and nothing else. The
+# solve stays on the physics tick, where a fixed timestep keeps Verlet stable;
+# only the write moves into the modifier pass.
 
 @export var gravity := 9.0
 @export var stiffness := 0.55       # 0 loose rag, 1 rigid stick
@@ -33,6 +41,7 @@ var _ready_to_solve := false
 
 
 func setup(skeleton: Skeleton3D) -> void:
+	# must be parented to the skeleton for the modifier pass to reach us
 	_skel = skeleton
 	if _skel == null:
 		return
@@ -54,6 +63,11 @@ func setup(skeleton: Skeleton3D) -> void:
 		_rest_len.append(_pos[j].distance_to(_pos[j + 1]))
 	_body_prev = _skel.global_transform.origin
 	_ready_to_solve = true
+
+
+func _process_modification() -> void:
+	if _ready_to_solve:
+		_write_back()
 
 
 func _physics_process(delta: float) -> void:
@@ -95,8 +109,6 @@ func _physics_process(delta: float) -> void:
 			else:
 				_pos[j + 1] -= correction
 		_limit_swing(anchor)
-
-	_write_back()
 
 
 func _limit_swing(anchor: Vector3) -> void:

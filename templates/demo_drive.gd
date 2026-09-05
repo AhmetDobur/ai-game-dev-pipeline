@@ -41,15 +41,27 @@ var _i := 0
 var _release: Array = []
 var _cam: Camera3D = null
 var _key: SpotLight3D = null
+var _fill: OmniLight3D = null
+var _rim: OmniLight3D = null
 var _body: Node3D = null
 var _angle := 0.0
 
 
+# PIPELINE_DEMO=light  -> lights only; you keep the controls and the game camera
+# PIPELINE_DEMO=drive|1 -> lights, demo camera and the scripted timeline, which
+#                          is what a --write-movie recording wants
+var _drive := false
+
+
 func _ready() -> void:
-	if OS.get_environment("PIPELINE_DEMO") == "":
+	var mode := OS.get_environment("PIPELINE_DEMO")
+	if mode == "":
 		set_process(false)
 		return
-	print("[demo] driving the moveset")
+	_drive = mode != "light"
+	if not _drive:
+		set_process(false)
+	print("[demo] mode=%s" % mode)
 	call_deferred("_rig_camera")
 
 
@@ -59,19 +71,51 @@ func _rig_camera() -> void:
 		push_warning("[demo] no player body found; leaving the game camera alone")
 		return
 	var root := get_tree().current_scene
-	_cam = Camera3D.new()
-	_cam.fov = 55.0
-	root.add_child(_cam)
-	_cam.current = true
-	# a spot riding with the camera: the cloak needs a moving highlight to read
-	# as cloth, and a flat ambient lift washes the hall out instead
+	if _drive:
+		_cam = Camera3D.new()
+		_cam.fov = 55.0
+		root.add_child(_cam)
+		_cam.current = true
+	# Key/fill/rim rather than one hot spot. A single lamp on a dark robe either
+	# leaves it a silhouette or blows the specular out to white; the fill opens
+	# the shadow side and the rim separates the cloak from a black hall.
 	_key = SpotLight3D.new()
-	_key.light_energy = 3.6
-	_key.spot_range = 14.0
-	_key.spot_angle = 42.0
+	_key.light_energy = 5.0
+	_key.spot_range = 16.0
+	_key.spot_angle = 50.0
 	_key.light_color = Color(1.0, 0.94, 0.86)
+	_key.shadow_enabled = true
 	root.add_child(_key)
+
+	_fill = OmniLight3D.new()
+	_fill.light_energy = 2.2
+	_fill.omni_range = 9.0
+	_fill.light_color = Color(0.72, 0.80, 1.0)
+	root.add_child(_fill)
+
+	_rim = OmniLight3D.new()
+	_rim.light_energy = 3.0
+	_rim.omni_range = 9.0
+	_rim.light_color = Color(1.0, 0.86, 0.70)
+	root.add_child(_rim)
+
+	# lift the hall itself off black so the character is not floating in a void
+	var env := _find_env(get_tree().root)
+	if env != null and env.environment != null:
+		env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		env.environment.ambient_light_color = Color(0.62, 0.60, 0.66)
+		env.environment.ambient_light_energy = 0.55
 	_place_camera()
+
+
+func _find_env(n: Node) -> WorldEnvironment:
+	if n is WorldEnvironment:
+		return n
+	for c in n.get_children():
+		var f := _find_env(c)
+		if f != null:
+			return f
+	return null
 
 
 func _find_body(n: Node) -> Node3D:
@@ -84,8 +128,13 @@ func _find_body(n: Node) -> Node3D:
 	return null
 
 
+func _physics_process(_d: float) -> void:
+	if not _drive:
+		_place_camera()          # lights track the player even with no timeline
+
+
 func _place_camera() -> void:
-	if _cam == null or _body == null:
+	if _body == null or _key == null:
 		return
 	# behind the shoulder while running (the cloak lives on the back), swinging
 	# round to three-quarter front for the striking section
@@ -94,10 +143,19 @@ func _place_camera() -> void:
 	var base := _body.global_position
 	var yaw := _body.global_rotation.y + _angle
 	var offset := Vector3(sin(yaw), 0.0, cos(yaw)) * CAM_DIST
-	_cam.global_position = base + offset + Vector3(0.0, CAM_HEIGHT, 0.0)
-	_cam.look_at(base + Vector3(0.0, AIM_HEIGHT, 0.0), Vector3.UP)
-	_key.global_position = _cam.global_position + Vector3(0.0, 1.2, 0.0)
-	_key.look_at(base + Vector3(0.0, AIM_HEIGHT, 0.0), Vector3.UP)
+	var eye := base + offset + Vector3(0.0, CAM_HEIGHT, 0.0)
+	if _cam != null:
+		_cam.global_position = eye
+		_cam.look_at(base + Vector3(0.0, AIM_HEIGHT, 0.0), Vector3.UP)
+	var aim := base + Vector3(0.0, AIM_HEIGHT, 0.0)
+	_key.global_position = eye + Vector3(0.0, 1.2, 0.0)
+	_key.look_at(aim, Vector3.UP)
+	# fill opposite the key, rim behind: both ride the same orbit so the shaping
+	# holds as the camera swings round for the striking section
+	var side := Vector3(sin(yaw + 2.0), 0.0, cos(yaw + 2.0)) * 2.6
+	_fill.global_position = base + side + Vector3(0.0, 1.5, 0.0)
+	var behind := Vector3(sin(yaw + PI), 0.0, cos(yaw + PI)) * 2.4
+	_rim.global_position = base + behind + Vector3(0.0, 2.1, 0.0)
 
 
 func _process(delta: float) -> void:

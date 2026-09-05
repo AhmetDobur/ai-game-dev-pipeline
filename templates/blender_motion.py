@@ -1196,19 +1196,46 @@ def procedural_extras(arm, clip, extras):
     else:
         f0, f1 = 0, FPS
     dur = max(1, f1 - f0)
+
+    # These parts are BONE CHAINS, and a bone's rotation is relative to its
+    # parent, so an amplitude written to every bone in a chain compounds. Six
+    # cloak segments at 0.15 rad each put the hem 65 degrees off vertical and
+    # the cloak stood out around the character like a ballgown. Divide by the
+    # chain's length so the number below means the swing at the TIP, whatever
+    # the rig's segment count happens to be.
+    def kind_of(pb):
+        n = pb.name.lower()
+        for k in ("tail", "jaw", "wing"):
+            if k in n:
+                return k
+        return "cloak" if ("cloak" in n or "cape" in n) else ""
+
+    chain = {}
+    for pb in bones:
+        chain.setdefault(kind_of(pb), []).append(pb)
+    index = {pb.name: i for group in chain.values()
+             for i, pb in enumerate(sorted(group, key=lambda b: b.name))}
+
     for f in range(f0, f1 + 1):
         phase = 2 * math.pi * (f - f0) / dur
         for pb in bones:
-            name = pb.name.lower()
+            kind = kind_of(pb)
+            if not kind:
+                continue
+            n = len(chain[kind])
+            # each segment lags the one above it, so the chain travels as a wave
+            # instead of swinging rigid -- that lag is what reads as cloth
+            lag = phase - 0.45 * index[pb.name]
             pb.rotation_mode = "XYZ"
-            if "tail" in name and "tail" in extras:
-                pb.rotation_euler = (0, 0, 0.8 * math.sin(phase))
-            elif "jaw" in name and "jaw" in extras:
+            if kind == "tail" and "tail" in extras:
+                pb.rotation_euler = (0, 0, 0.8 / n * math.sin(lag))
+            elif kind == "jaw" and "jaw" in extras:
                 pb.rotation_euler = (max(0.0, math.sin(phase)) if clip == "attack" else 0, 0, 0)
-            elif "wing" in name and "wings" in extras:
-                pb.rotation_euler = (0, 0.9 * math.sin(phase), 0)
-            elif ("cloak" in name or "cape" in name) and "cloak" in extras:
-                pb.rotation_euler = (0.15 * math.sin(phase), 0, 0.1 * math.sin(phase * 0.7))
+            elif kind == "wing" and "wings" in extras:
+                pb.rotation_euler = (0, 0.9 / n * math.sin(lag), 0)
+            elif kind == "cloak" and "cloak" in extras:
+                pb.rotation_euler = (0.30 / n * math.sin(lag), 0,
+                                     0.20 / n * math.sin(lag * 0.7))
             else:
                 continue
             pb.keyframe_insert("rotation_euler", frame=f)
