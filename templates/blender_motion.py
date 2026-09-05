@@ -1081,6 +1081,11 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
             bpy.context.scene.frame_set(f)
+            # pose_bone.matrix is evaluated, not driven straight by the animation
+            # system the way matrix_basis is, so it reads stale without this --
+            # which produced a sumo squat: feet 0.55 of body height apart and
+            # knees bent 58 degrees, from a source frame standing straight.
+            bpy.context.view_layer.update()
             world = {}
             for tname in order:
                 sb = src.pose.bones[pair_map[tname]]
