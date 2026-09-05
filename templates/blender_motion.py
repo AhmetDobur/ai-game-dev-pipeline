@@ -1016,12 +1016,50 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # A CMU trial runs ten to sixty seconds and contains the move surrounded
         # by the performer walking up, waiting and walking off; keyframing the
         # raw range gave a twenty-second "walk" that never looped.
+        # Put each of our bones where the source's bone actually is, composing
+        # down the hierarchy.
+        #
+        # The two rigs do not share a rest pose: CMU's is a T-pose, and the rig
+        # fitted to this mesh has the arms hanging at the sides, because that is
+        # how the character was drawn. Copying matrix_basis across bent him
+        # double at the waist. Matching the DELTA from each rest pose instead
+        # stands him up, but then applies the T-pose-to-hanging drop a second
+        # time and the arms flare out and up. Neither is right, because the
+        # question is not "what did their arm do" but "where is their arm".
+        #
+        # So take the source bone's orientation in armature space and solve for
+        # the local rotation that puts ours there. Blender composes a posed bone
+        # as  W = W_parent . Rl . b  (Rl being its rest rotation relative to its
+        # parent), so  b = (W_parent . Rl)^-1 . W. Parents must be solved first,
+        # which is what the depth sort is for.
+        rest_t = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
+        parent_of = {b.name: (b.parent.name if b.parent else None)
+                     for b in arm.pose.bones}
+        pair_map = {tname: sname for sname, tname in pairs}
+        depth = {b.name: len(b.parent_recursive) for b in arm.pose.bones}
+        order = sorted(pair_map, key=lambda n: depth[n])
+        to_arm = arm.matrix_world.inverted()
+
+        rel_rest = {}
+        for tname in order:
+            par = parent_of[tname]
+            rel_rest[tname] = (rest_t[par].inverted() @ rest_t[tname]) if par \
+                else rest_t[tname]
+
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
             bpy.context.scene.frame_set(f)
-            for sname, tname in pairs:
-                # matrix_basis captures the source's local pose whatever its rot mode
-                track[tname].append(src.pose.bones[sname].matrix_basis.to_quaternion())
+            world = {}
+            for tname in order:
+                sb = src.pose.bones[pair_map[tname]]
+                world[tname] = (to_arm @ src.matrix_world @ sb.matrix).to_quaternion()
+            for tname in order:
+                par = parent_of[tname]
+                # an unmatched parent (the cloak root, say) stays at its rest
+                wp = world.get(par, rest_t[par]) if par else \
+                    mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
+                track[tname].append((wp @ rel_rest[tname]).inverted() @ world[tname])
+
         n = f1 - f0 + 1
         align_signs(track)
         # A mined punch already knows its own frames, down to the chamber and
