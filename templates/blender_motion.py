@@ -1019,11 +1019,18 @@ def loop_blend(track, fraction=_BLEND_FRACTION):
 # Everything not listed keeps its own rest direction, which for a spine, a leg
 # or a head already agrees between any two humanoid rigs.
 T_POSE_REF = {
-    "leftshoulder": (1.0, 0.0, 0.0), "leftarm": (1.0, 0.0, 0.0),
-    "leftforearm": (1.0, 0.0, 0.0), "lefthand": (1.0, 0.0, 0.0),
-    "rightshoulder": (-1.0, 0.0, 0.0), "rightarm": (-1.0, 0.0, 0.0),
-    "rightforearm": (-1.0, 0.0, 0.0), "righthand": (-1.0, 0.0, 0.0),
+    "leftarm": (1.0, 0.0, 0.0), "leftforearm": (1.0, 0.0, 0.0),
+    "lefthand": (1.0, 0.0, 0.0),
+    "rightarm": (-1.0, 0.0, 0.0), "rightforearm": (-1.0, 0.0, 0.0),
+    "righthand": (-1.0, 0.0, 0.0),
 }
+# The clavicles are deliberately NOT in that table. A clavicle points outward
+# and forward at rest in BOTH rigs -- the difference between them is anatomy,
+# not a pose difference to normalise away -- and swinging one onto a pure X
+# axis leaves its roll arbitrary, which then propagates down the whole arm.
+# Doing that pulled the shoulder joints inward by a fixed amount per clip, up
+# to 21% on the run, and the arms came with them: "the arms and shoulders is
+# really in each other".
 
 def retarget_onto(arm, bvh_path, clip_name=""):
     """Sample a BVH and copy its per-bone local rotation onto `arm` (the armature the
@@ -1223,17 +1230,17 @@ def idle_from_rest(arm):
         lag = breath_phase(u * 2.0 - 0.12)
 
         for name, w in _BREATH_BONES.items():
-            key(name, f, x=0.035 * w * breath)
+            key(name, f, x=0.090 * w * breath)
         # weight shift: the hips roll and the far knee softens to take it
-        key("Hips", f, y=0.020 * sway, z=0.012 * sway)
-        key("LeftLeg", f, x=-0.020 * max(0.0, sway))
-        key("RightLeg", f, x=-0.020 * max(0.0, -sway))
+        key("Hips", f, y=0.045 * sway, z=0.028 * sway)
+        key("LeftLeg", f, x=-0.045 * max(0.0, sway))
+        key("RightLeg", f, x=-0.045 * max(0.0, -sway))
         # arms drift out and back with the chest instead of hanging rigid
-        key("LeftArm", f, z=-0.030 * lag - 0.012 * sway)
-        key("RightArm", f, z=0.030 * lag - 0.012 * sway)
-        key("LeftForeArm", f, x=-0.022 * lag)
-        key("RightForeArm", f, x=-0.022 * lag)
-        key("Neck", f, y=0.018 * drift, z=0.010 * sway)
+        key("LeftArm", f, z=-0.075 * lag - 0.030 * sway)
+        key("RightArm", f, z=0.075 * lag - 0.030 * sway)
+        key("LeftForeArm", f, x=-0.055 * lag)
+        key("RightForeArm", f, x=-0.055 * lag)
+        key("Neck", f, y=0.040 * drift, z=0.024 * sway)
 
     bpy.ops.object.mode_set(mode="OBJECT")
     print(f"[motion] idle: built from the rig's rest pose "

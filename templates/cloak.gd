@@ -68,7 +68,7 @@ func setup(skeleton: Skeleton3D) -> void:
 		_prev.append(world.origin)
 	for j in range(_bones.size() - 1):
 		_rest_len.append(_pos[j].distance_to(_pos[j + 1]))
-	_body_prev = _skel.global_transform.origin
+	_body_prev = _pos[0]
 	_ready_to_solve = true
 
 
@@ -82,8 +82,14 @@ func _physics_process(delta: float) -> void:
 		return
 	var root_world := _skel.global_transform * _skel.get_bone_global_pose(_bones[0])
 	var anchor := root_world.origin
-	var body_vel := (_skel.global_transform.origin - _body_prev) / delta
-	_body_prev = _skel.global_transform.origin
+	# Drive the cloth from where the cloak is ACTUALLY attached, not from the
+	# character node's origin. The node only moves when the character walks, so
+	# the cloak hung dead through every punch, turn and weight shift -- all the
+	# motion that lives in the animation rather than in the transform. The
+	# anchor is the cloak's root bone in world space, so it carries the hips
+	# swinging into a cross and the shoulders dropping into a body shot.
+	var body_vel := (anchor - _body_prev) / delta
+	_body_prev = anchor
 
 	# --- integrate ---------------------------------------------------------
 	# The body's own motion is injected as a drag on every particle. Without it
