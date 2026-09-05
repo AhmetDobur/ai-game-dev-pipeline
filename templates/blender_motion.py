@@ -267,7 +267,15 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
         # Arms hang at the sides inside a robe rather than swinging out on a
         # diagonal: elbow and wrist stay near the silhouette edge and descend,
         # which is also the rest pose CMU's mocap rotations assume.
-        arm_f = (sh_f, sh_f - 0.11, sh_f - 0.24, sh_f - 0.31)
+        # Joint heights from standing anthropometry (Winter, Drillis & Contini),
+        # as drops below the shoulder in fractions of stature: elbow 0.188,
+        # wrist 0.333, fingertip 0.441. These used to be 0.11/0.24/0.31, which
+        # split the arm into near-equal thirds and put the elbow 6% of body
+        # height too high and the wrist 7.7% too high. The visible cost was not
+        # a slightly odd elbow: the "hand" bone was really the lower forearm as
+        # well, so it swept a huge volume beside the hip, took the coat panels
+        # hanging there with it, and no sleeve radius could tell the difference.
+        arm_f = (sh_f, sh_f - 0.188, sh_f - 0.333, sh_f - 0.441)
         for side, sx in (("Left", -1), ("Right", 1)):
             sh = bone(f"{side}Shoulder", core(sh_f) + (z(sh_f),),
                       side_pt(arm_f[0], 0.42, sx), chest)
@@ -362,7 +370,13 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
     return arm
 
 
-def trim_sleeves(mesh_obj, arm, sleeve=0.38):
+# Cloth radius around each arm bone, as a fraction of body height. Anatomical
+# limb radius plus a generous allowance for a heavy sleeve -- stripping a real
+# sleeve off the arm would look worse than leaving a little cloth on it.
+_SLEEVE = {"Arm": 0.055, "ForeArm": 0.045, "Hand": 0.035}
+
+
+def trim_sleeves(mesh_obj, arm, sleeve=1.0):
     """Keep each arm to its own sleeve and give the rest of the coat to the cloak.
 
     Bone heat is solved on the garment's outer shell, so wherever an arm hangs
@@ -381,18 +395,17 @@ def trim_sleeves(mesh_obj, arm, sleeve=0.38):
     failure than leaving a little cloth on it.
     """
     to_local = mesh_obj.matrix_world.inverted() @ arm.matrix_world
+    zs = [v.co.z for v in mesh_obj.data.vertices]
+    height = (max(zs) - min(zs)) if zs else 0.0
+    if height <= 0.0:
+        return
     limbs = []
     for side in ("Left", "Right"):
-        upper = arm.data.bones.get(f"{side}Arm")
-        if upper is None:
-            continue
-        radius = sleeve * (to_local @ upper.tail_local
-                           - to_local @ upper.head_local).length
-        for part in ("Arm", "ForeArm", "Hand"):
+        for part, frac in _SLEEVE.items():
             b = arm.data.bones.get(f"{side}{part}")
             if b is not None and mesh_obj.vertex_groups.get(b.name):
                 limbs.append((b.name, to_local @ b.head_local,
-                              to_local @ b.tail_local, radius))
+                              to_local @ b.tail_local, sleeve * frac * height))
     if not limbs:
         return
 
