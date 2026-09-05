@@ -1145,19 +1145,22 @@ def retarget_onto(arm, bvh_path, clip_name=""):
                 continue
             d = rest_t[tname] @ mathutils.Vector((0.0, 1.0, 0.0))
             if d.z < -0.1:
-                abduction[tname] = (math.atan2(abs(d.x), -d.z) * 0.8,
-                                    1.0 if d.x > 0 else -1.0)
+                # signed, so an arm that has swung PAST the centre line is the
+                # furthest from its floor rather than exempt from it
+                abduction[tname] = math.atan2(d.x, -d.z) * 0.9
 
-        def hold_arm_clear(q, floor):
+        def hold_arm_clear(q, limit):
             """Push a hanging arm back out to its rest clearance."""
-            limit, sign = floor
             d = q @ mathutils.Vector((0.0, 1.0, 0.0))
             if d.z > -0.3:                  # raised or thrown forward: leave it
                 return q
-            have = math.atan2(abs(d.x), -d.z)
-            if have >= limit or (d.x != 0.0 and (d.x > 0) != (sign > 0)):
-                return q
-            return mathutils.Quaternion(fwd, sign * (limit - have)) @ q
+            have = math.atan2(d.x, -d.z)
+            delta = limit - have
+            if (limit >= 0.0 and delta <= 0.0) or (limit < 0.0 and delta >= 0.0):
+                return q                    # already out at least this far
+            # about +Y a positive angle swings the bone's tip toward -x, so the
+            # correction that opens the arm outward is the negated deficit
+            return mathutils.Quaternion(fwd, -delta) @ q
 
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
