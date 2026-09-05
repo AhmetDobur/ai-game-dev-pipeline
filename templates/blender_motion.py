@@ -1397,6 +1397,10 @@ def _dir(*parts):
     return (x / n, y / n, z / n)
 
 
+_ARM = ("Arm", "ForeArm", "Hand")
+_LEG = ("UpLeg", "Leg", "Foot")
+
+
 def _fist(sx, fwd, out, up, elbow=(0.0, -0.3, -1.0)):
     """Put one fist at a target, measured in arm-lengths from its own shoulder.
 
@@ -1412,13 +1416,34 @@ def _fist(sx, fwd, out, up, elbow=(0.0, -0.3, -1.0)):
     2.8 m giant and for a 1.6 m one. `out` is away from the body on that side,
     so a negative value crosses the centre line -- which is what a hook does.
     """
+    return _limb(sx, _ARM, fwd, out, up, elbow)
+
+
+def _limb(sx, chain, fwd, out, up, pole):
     side = "Left" if sx < 0 else "Right"
-    return {"_ik": {side: ((fwd, out * (1.0 if sx > 0 else -1.0), up), elbow)}}
+    target = (fwd, out * (1.0 if sx > 0 else -1.0), up)
+    # keyed per limb, not per side, so a move can pose an arm and a leg at once
+    return {"_ik": {side + chain[0]: (side, chain, target, pole)}}
 
 
 def _fists(fwd, out, up, elbow=(0.0, -0.3, -1.0)):
     """Both fists, mirrored."""
     return _merge(_fist(-1, fwd, out, up, elbow), _fist(1, fwd, out, up, elbow))
+
+
+def _foot(sx, fwd, out, up, knee=(1.0, 0.0, 0.0)):
+    """Put a foot at a target, in leg-lengths from that hip.
+
+    Same idea as _fist and the same reason: a kick is specified by where the
+    foot ends up. The knee pole points forward by default because that is the
+    only way a knee bends, and getting it wrong is not a subtle error.
+    """
+    return _limb(sx, _LEG, fwd, out, up, knee)
+
+
+def _stand():
+    """Both feet under the hips. Neutral for anything that is not a kick."""
+    return _merge(_foot(-1, 0.02, 0.12, -0.97), _foot(1, 0.02, 0.12, -0.97))
 
 
 def _guard():
@@ -1431,30 +1456,30 @@ def _guard():
     return _fists(0.34, 0.30, -0.36)
 
 
-def solve_arm(arm, side, target, pole, rest_w):
-    """Two-bone IK from a fist target: shoulder and elbow angles that reach it.
+def solve_limb(arm, side, chain, target, pole, rest_w):
+    """Two-bone IK from an end-effector target: the joint angles that reach it.
 
     Returns world rotations for the three arm bones, or {} if the rig has no
     such chain. The elbow is placed by a pole vector rather than left free,
     because the plane the elbow bends in is what separates a punch from a
     chicken wing, and a direction alone does not determine it.
     """
-    names = [f"{side}Arm", f"{side}ForeArm", f"{side}Hand"]
+    names = [f"{side}{part}" for part in chain]
     if any(n not in arm.pose.bones for n in names):
         return {}
-    upper, fore, hand = (arm.pose.bones[n].bone for n in names)
-    shoulder = upper.head_local
-    l1 = (fore.head_local - upper.head_local).length
-    l2 = (hand.head_local - fore.head_local).length
+    upper, lower, tip = (arm.pose.bones[n].bone for n in names)
+    root = upper.head_local
+    l1 = (lower.head_local - upper.head_local).length
+    l2 = (tip.head_local - lower.head_local).length
     if l1 <= 0.0 or l2 <= 0.0:
         return {}
 
     v = mathutils.Vector((target[1], -target[0], target[2]))   # out, fwd, up
     if v.length > 0.98:
         v = v.normalized() * 0.98      # never fully lock the elbow straight
-    goal = shoulder + v * (l1 + l2)
+    goal = root + v * (l1 + l2)
 
-    reach = goal - shoulder
+    reach = goal - root
     d = max(1e-5, min(reach.length, l1 + l2 - 1e-4))
     u = reach.normalized()
     cos_a = max(-1.0, min(1.0, (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)))
@@ -1479,8 +1504,8 @@ def solve_arm(arm, side, target, pole, rest_w):
             best = (score, cand)
     upper_dir = best[1]
 
-    elbow_pos = shoulder + upper_dir * l1
-    fore_dir = (goal - elbow_pos)
+    joint = root + upper_dir * l1
+    fore_dir = (goal - joint)
     if fore_dir.length < 1e-6:
         fore_dir = upper_dir.copy()
     fore_dir.normalize()
@@ -1489,10 +1514,10 @@ def solve_arm(arm, side, target, pole, rest_w):
     # chain has to actually end where the move said the fist goes. Reaching the
     # target is guaranteed by the law of cosines only if the axis and sign are
     # right, and those are exactly what a silent geometry bug gets wrong.
-    landed = elbow_pos + fore_dir * l2
+    landed = joint + fore_dir * l2
     miss = (landed - goal).length / (l1 + l2)
     if miss > 0.02:
-        print(f"[motion] WARNING {side} fist missed its target by "
+        print(f"[motion] WARNING {names[0]} missed its target by "
               f"{miss * 100:.0f}% of arm reach")
 
     return {names[0]: aim_world(rest_w[names[0]], upper_dir),
@@ -1605,7 +1630,88 @@ GRAPPLER = {
     ]),
 }
 
-MOVESETS = {"grappler": GRAPPLER}
+def _tight():
+    """A striker's guard: hands high and tight, elbows in, bladed to the front.
+
+    The opposite of the grappler's open hands. She is not waiting to catch
+    anything -- she is covering her own head so she can throw from behind it.
+    """
+    return _merge(_fists(0.30, 0.15, 0.24, elbow=(0.0, -0.15, -1.0)), _stand())
+
+
+# Veiled Shadow is built to the striker archetype, drawn from the same source
+# the grappler was: a named fighter used as a specification rather than copied.
+# Where the grappler plants and swings, she is bladed, quick and leg-led -- the
+# heavy buttons are all kicks, the startup is short, and nothing commits the
+# whole body the way a lariat does.
+STRIKER = {
+    # Straight jab off the front hand. Almost no travel and back instantly;
+    # this is the button she uses to make room, not to hurt anyone.
+    "jab": dict(seconds=0.28, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.45, _merge(_tight(), _fist(1, 0.92, 0.06, 0.16),
+                      _lean(pitch=0.35, twist=-0.30))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+    # Spinning backfist: the turn is the attack. The fist stays close to its own
+    # shoulder and the torso whips it round, which is why it beats a hook to the
+    # same spot despite travelling less.
+    "cross": dict(seconds=0.42, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.30, _merge(_tight(), _fist(1, 0.10, 0.40, 0.24),
+                      _lean(twist=1.1))),
+        (0.62, _merge(_tight(), _fist(1, 0.72, -0.34, 0.18),
+                      _lean(pitch=0.30, twist=-1.1))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+    # Rising knee. The foot tucks under while the thigh drives up, so the knee
+    # is the leading edge -- the pole vector is what makes that read.
+    "overhand": dict(seconds=0.45, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.34, _merge(_tight(), _foot(1, 0.30, 0.12, -0.62,
+                                      knee=(1.0, 0.0, 0.5)),
+                      _lean(pitch=0.30))),
+        (0.60, _merge(_tight(), _foot(1, 0.34, 0.10, -0.30,
+                                      knee=(1.0, 0.0, 0.9)),
+                      _lean(pitch=-0.45))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+    # Rising anti-air kick: one long line from the planted foot to the toe,
+    # thrown almost vertically. Everything else gets out of its way.
+    "left_uppercut": dict(seconds=0.60, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.26, _merge(_tight(), _foot(1, 0.22, 0.12, -0.72),
+                      _lean(pitch=0.35))),
+        (0.56, _merge(_fist(-1, 0.20, 0.30, 0.30), _fist(1, 0.10, 0.22, -0.20),
+                      _stand(), _foot(1, 0.50, 0.10, 0.70),
+                      _lean(pitch=-0.85))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+    # Diving spiral thrust along the ground. Without root motion the travel has
+    # to be sold by the shape: she folds down over a fully committed front leg.
+    "left_bodyshot": dict(seconds=0.70, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.28, _merge(_tight(), _foot(1, 0.34, 0.12, -0.66),
+                      _lean(pitch=-0.35))),
+        (0.58, _merge(_fists(0.42, 0.20, -0.10), _stand(),
+                      _foot(1, 0.94, 0.08, -0.24), _lean(pitch=1.5))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+    # High roundhouse: chambered tight, then whipped out flat at head height.
+    "right_uppercut": dict(seconds=0.55, keys=[
+        (0.00, _merge(_tight(), _lean())),
+        (0.30, _merge(_tight(), _foot(1, 0.28, 0.40, -0.60,
+                                      knee=(0.6, 0.8, 0.2)),
+                      _lean(twist=0.7))),
+        (0.58, _merge(_fist(-1, 0.24, 0.34, 0.20), _fist(1, 0.06, 0.26, -0.24),
+                      _stand(), _foot(1, 0.66, 0.34, 0.52,
+                                      knee=(0.6, 0.5, 0.3)),
+                      _lean(pitch=-0.55, twist=-0.7))),
+        (1.00, _merge(_tight(), _lean())),
+    ]),
+}
+
+MOVESETS = {"grappler": GRAPPLER, "striker": STRIKER}
 
 
 def authored_clip(arm, clip, moveset):
@@ -1629,8 +1735,8 @@ def authored_clip(arm, clip, moveset):
             if callable(d):     # a tilt relative to this rig's own rest pose
                 d = d(rq @ mathutils.Vector((0.0, 1.0, 0.0)))
             want[b] = aim_world(rq, d)
-        for side, (target, pole) in dirs.get("_ik", {}).items():
-            want.update(solve_arm(arm, side, target, pole, rest_w))
+        for side, chain, target, pole in dirs.get("_ik", {}).values():
+            want.update(solve_limb(arm, side, chain, target, pole, rest_w))
         local = solve_local(arm, want)
         for pb in arm.pose.bones:
             if any(k in pb.name.lower()
