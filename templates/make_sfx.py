@@ -155,8 +155,9 @@ def write_wav(path, samples, rate=RATE):
     return path
 
 
-# Matched to combat.gd's FRAMES table: a jab is 4 damage and an overhand is 11,
-# and the sound has to agree with the number or the hit reads as weightless.
+# Weighted to match how much each move hurts. combat.gd scales damage with the
+# clip's length, so the ordering here is the ordering of the moves' durations --
+# the sound has to agree with the number or the hit reads as weightless.
 STRIKES = {
     "jab":            dict(weight=0.5, brightness=1.35, tail=0.5),
     "cross":          dict(weight=0.8, brightness=1.20, tail=0.7),

@@ -57,6 +57,11 @@ const FALLBACK_SECONDS := 0.5   # a move whose clip is missing still has timing
 
 var _length: Dictionary = {}    # move -> seconds, read from the loaded clips
 
+# Two players rather than one: the swing and the impact overlap, and cutting the
+# whoosh off at the moment of contact is what makes a hit sound like a click.
+var _swing: AudioStreamPlayer = null
+var _impact: AudioStreamPlayer = null
+
 const BUFFER_SECONDS := 0.28   # a press this long before the cancel window still lands
 const CHAIN_SECONDS := 0.45    # after this much neutral the chain is forgotten
 const MAX_CHAIN := 2           # the third beat lands when its table is written
@@ -84,6 +89,11 @@ func setup(anim: AnimationPlayer) -> void:
 			if clip.length > 0.001:
 				seconds = clip.length
 		_length[move] = seconds
+
+	_swing = AudioStreamPlayer.new()
+	_impact = AudioStreamPlayer.new()
+	add_child(_swing)
+	add_child(_impact)
 
 
 func is_striking() -> bool:
@@ -118,6 +128,7 @@ func tick(delta: float) -> void:
 	var contact := _contact_seconds(_move)
 	if not _did_hit and _elapsed >= contact and _elapsed <= contact + ACTIVE_SECONDS:
 		_did_hit = true
+		_play_sound(_impact, "res://audio/hit_%s.wav" % _move)
 		strike_landed.emit(_move, _damage(_move))
 
 	# a buffered press fires the moment the cancel window opens, provided it was
@@ -150,6 +161,7 @@ func _begin(hand: String) -> void:
 	_did_hit = false
 	_buffered = ""
 	_play(move)
+	_play_sound(_swing, "res://audio/whiff_%s.wav" % move)
 	strike_started.emit(move, seq.length())
 
 
@@ -172,6 +184,15 @@ func _play(move: String) -> void:
 	# so there is nothing left to reconcile -- the hitbox opens when the fist
 	# arrives because both are measured from the same animation.
 	_anim.play(move, 0.06)
+
+
+func _play_sound(player: AudioStreamPlayer, path: String) -> void:
+	# Silence is the correct behaviour for a project scaffolded without audio,
+	# so a missing file is not an error worth stopping the fight over.
+	if player == null or not ResourceLoader.exists(path):
+		return
+	player.stream = load(path)
+	player.play()
 
 
 ## For a third beat later: extend COMBOS with three-hand keys and raise

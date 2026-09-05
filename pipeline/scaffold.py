@@ -7,6 +7,7 @@ coder has produced GDScript inside a .tscn); a templated one always parses.
 """
 import math
 import shutil
+import sys
 from pathlib import Path
 
 # physical keycodes. Seat 1 gets WASD (+ the mouse), seat 2 gets the arrows to
@@ -500,6 +501,22 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         src = Path(__file__).resolve().parent.parent / "templates" / name
         if src.exists():
             shutil.copy2(src, game_dir / "scripts" / name)
+    # Combat audio is synthesised rather than shipped as assets: it is a few
+    # hundred lines of stdlib DSP, it costs nothing, and it means the sounds are
+    # generated to match this project's own strike table instead of being a
+    # folder of wavs somebody has to keep in sync.
+    try:
+        from templates.make_sfx import generate as _make_sfx
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        try:
+            from templates.make_sfx import generate as _make_sfx
+        except ImportError:
+            _make_sfx = None
+    if _make_sfx is not None:
+        (game_dir / "audio").mkdir(exist_ok=True)
+        _make_sfx(str(game_dir / "audio"))
+
     shot_src = Path(__file__).resolve().parent.parent / "templates" / "godot_shot.gd"
     if shot_src.exists():
         (game_dir / "scripts").mkdir(exist_ok=True)
