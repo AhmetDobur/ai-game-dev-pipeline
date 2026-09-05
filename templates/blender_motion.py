@@ -1244,10 +1244,31 @@ def procedural_extras(arm, clip, extras):
 
 # --- export ----------------------------------------------------------------
 
-def export_glb(path):
-    bpy.ops.object.select_all(action="SELECT")
+def export_glb(path, arm=None, mesh=None):
+    """Export the character and its rig -- and nothing else that happens to be
+    in the scene.
+
+    This used to export the whole scene, and a stray 42-vertex Icosphere
+    spanning the full [-1,1] unit cube rode along inside character.glb. In the
+    game its upper hemisphere sat around the character's legs and clipped at
+    the floor, which reads exactly like a wide bell-shaped skirt -- so the
+    cloak looked like it was flaring even after the rig and the cloth solver
+    were both correct, and every fix aimed at those was aimed at the wrong
+    thing."""
+    keep = {o for o in (arm, mesh) if o is not None}
+    if not keep:
+        keep = {o for o in bpy.context.scene.objects
+                if o.type == "ARMATURE" or o.type == "MESH"}
+    keep |= {o for o in bpy.context.scene.objects if o.parent in keep}
+    dropped = [o.name for o in bpy.context.scene.objects if o not in keep]
+    if dropped:
+        print(f"[motion] not exporting {len(dropped)} stray object(s): "
+              f"{', '.join(sorted(dropped)[:6])}")
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in keep:
+        o.select_set(True)
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB",
-                              use_selection=False, export_animations=True)
+                              use_selection=True, export_animations=True)
 
 
 def main():
@@ -1287,7 +1308,10 @@ def main():
     if arm.animation_data:
         arm.animation_data.action = None        # export from NLA tracks only
     out = os.path.join(out_dir, "character.glb")
-    export_glb(out)
+    body = next((o for o in bpy.context.scene.objects
+                 if o.type == "MESH" and any(m.type == "ARMATURE" for m in o.modifiers)),
+                None)
+    export_glb(out, arm, body)
     # Provenance the finished .glb cannot carry: whether a clip is real mocap or
     # a synthetic cycle looks identical inside the file, but it is exactly what
     # someone asking to "make the animation more realistic" needs to know.
