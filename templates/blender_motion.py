@@ -102,6 +102,104 @@ def try_unirig(mesh_obj, unirig, out_dir):
         return None
 
 
+# --- fitting the rig to the mesh instead of to a template -------------------
+#
+# The biped used to be laid out purely as fractions of the bounding box: the
+# hand bone sat 0.34 of the character's height out from the centre line. On the
+# reference character the mesh is only 0.256 of its height wide at that point,
+# so both hands hung a third of their length OUTSIDE the mesh. Bone heat cannot
+# solve a bone that is not inside the volume -- it failed, every weight came out
+# zero, and the fallback distance bind then glued each hand to whatever happened
+# to be nearest, which is the thigh. That is what "the limbs are misaligned"
+# looks like from the inside.
+#
+# So measure the silhouette and put the bones where the body actually is.
+
+_FIT_BANDS = 48
+
+
+def silhouette(pts, lo_z, hi_z, bands=_FIT_BANDS):
+    """Per-height slice of the mesh: how wide it is and where its centre sits."""
+    h = hi_z - lo_z or 1e-6
+    out = []
+    for i in range(bands):
+        z0 = lo_z + h * i / bands
+        z1 = lo_z + h * (i + 1) / bands
+        band = [p for p in pts if z0 <= p.z < z1]
+        if not band:
+            out.append(None)
+            continue
+        xs = [p.x for p in band]
+        ys = [p.y for p in band]
+        out.append({"z": (z0 + z1) / 2,
+                    "half_w": (max(xs) - min(xs)) / 2,
+                    "xc": (max(xs) + min(xs)) / 2,
+                    "yc": (max(ys) + min(ys)) / 2,
+                    "half_d": (max(ys) - min(ys)) / 2})
+    return out
+
+
+def slice_at(prof, lo_z, hi_z, frac):
+    """The measured slice nearest a height given as a fraction of total height,
+    walking outward when that exact slice is empty."""
+    n = len(prof)
+    i = min(n - 1, max(0, int(frac * n)))
+    for d in range(n):
+        for j in (i - d, i + d):
+            if 0 <= j < n and prof[j]:
+                return prof[j]
+    return None
+
+
+def inside(prof, lo_z, hi_z, frac, lateral, keep=0.82):
+    """Clamp a lateral offset so the bone stays inside the mesh at that height.
+
+    `keep` leaves a margin off the surface: a bone exactly on the skin weights
+    the far side of a limb as strongly as the near side.
+    """
+    sl = slice_at(prof, lo_z, hi_z, frac)
+    if not sl or sl["half_w"] <= 1e-6:
+        return lateral
+    limit = sl["half_w"] * keep
+    return max(-limit, min(limit, lateral))
+
+
+def shoulder_frac(prof, lo_z, hi_z, default=0.82):
+    """Height where the torso stops being torso-wide, as a fraction of height.
+
+    Shoulders are where the silhouette narrows sharply on the way up. Measured
+    off the width profile rather than assumed, because a hooded figure, a
+    broad-shouldered brawler and a slim one put their shoulders in different
+    places and a rest pose that misses the joint bends the arm from the chest.
+    """
+    torso = slice_at(prof, lo_z, hi_z, 0.72)
+    if not torso:
+        return default
+    thresh = torso["half_w"] * 0.85
+    n = len(prof)
+    best = None
+    for i in range(int(n * 0.60), int(n * 0.95)):
+        sl = prof[i]
+        if sl and sl["half_w"] >= thresh:
+            best = (i + 0.5) / n
+    return best if best and 0.68 <= best <= 0.90 else default
+
+
+def neck_frac(prof, lo_z, hi_z, shoulder, default=0.86):
+    """Where the silhouette has narrowed to head width."""
+    torso = slice_at(prof, lo_z, hi_z, 0.72)
+    if not torso:
+        return default
+    thresh = torso["half_w"] * 0.45
+    n = len(prof)
+    for i in range(int(n * 0.95), int(n * 0.60), -1):
+        sl = prof[i]
+        if sl and sl["half_w"] >= thresh:
+            f = (i + 1.5) / n
+            return f if shoulder + 0.02 <= f <= 0.95 else default
+    return default
+
+
 def procedural_rig(mesh_obj, body_plan, extras=()):
     """Fit a minimal armature to the mesh bounding box. Humanoid gets a biped
     template; anything else gets a head->tail spine chain that suits fish, blobs,
@@ -135,26 +233,52 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
         # Separate upper/fore arm and thigh/shin, too: with one shoulder-to-hand
         # bone there is no elbow or knee to bend, so any arm motion swung the
         # whole limb rigidly from the shoulder.
+        prof = silhouette(bb, lo[2], hi[2])
+
         def z(f):
             return lo[2] + h * f
-        hips = bone("Hips", (cx, cy, z(0.50)), (cx, cy, z(0.56)))
-        spine = bone("Spine", hips.tail, (cx, cy, z(0.68)), hips)
-        chest = bone("Spine1", spine.tail, (cx, cy, z(0.80)), spine)
-        neck = bone("Neck", chest.tail, (cx, cy, z(0.86)), chest)
-        bone("Head", neck.tail, (cx, cy, hi[2]), neck)
+
+        def core(f):
+            """Centre line of the body at this height, measured not assumed."""
+            sl = slice_at(prof, lo[2], hi[2], f)
+            return (sl["xc"], sl["yc"]) if sl else (cx, cy)
+
+        def side_pt(f, frac_of_half, sx):
+            """A point out to the side at height f, kept inside the mesh.
+
+            frac_of_half is how far toward the surface to sit, so an arm rides
+            near the outside of the silhouette and a leg nearer the middle,
+            without either ever leaving the volume.
+            """
+            sl = slice_at(prof, lo[2], hi[2], f)
+            if not sl:
+                return (cx + sx * h * frac_of_half * 0.3, cy, z(f))
+            return (sl["xc"] + sx * sl["half_w"] * frac_of_half, sl["yc"], z(f))
+
+        sh_f = shoulder_frac(prof, lo[2], hi[2])
+        neck_f = neck_frac(prof, lo[2], hi[2], sh_f)
+
+        hx, hy = core(0.50)
+        hips = bone("Hips", (hx, hy, z(0.50)), (hx, hy, z(0.56)))
+        spine = bone("Spine", hips.tail, core(0.68) + (z(0.68),), hips)
+        chest = bone("Spine1", spine.tail, core(sh_f) + (z(sh_f),), spine)
+        neck = bone("Neck", chest.tail, core(neck_f) + (z(neck_f),), chest)
+        bone("Head", neck.tail, core(0.97) + (hi[2],), neck)
+        # Arms hang at the sides inside a robe rather than swinging out on a
+        # diagonal: elbow and wrist stay near the silhouette edge and descend,
+        # which is also the rest pose CMU's mocap rotations assume.
+        arm_f = (sh_f, sh_f - 0.11, sh_f - 0.24, sh_f - 0.31)
         for side, sx in (("Left", -1), ("Right", 1)):
-            sh = bone(f"{side}Shoulder", (cx, cy, z(0.82)),
-                      (cx + sx * h * 0.10, cy, z(0.82)), chest)
-            up = bone(f"{side}Arm", sh.tail, (cx + sx * h * 0.22, cy, z(0.72)), sh)
-            fore = bone(f"{side}ForeArm", up.tail,
-                        (cx + sx * h * 0.30, cy, z(0.60)), up)
-            bone(f"{side}Hand", fore.tail, (cx + sx * h * 0.34, cy, z(0.55)), fore)
-            thigh = bone(f"{side}UpLeg", (cx + sx * h * 0.08, cy, z(0.50)),
-                         (cx + sx * h * 0.09, cy, z(0.28)), hips)
-            shin = bone(f"{side}Leg", thigh.tail,
-                        (cx + sx * h * 0.09, cy, z(0.05)), thigh)
-            bone(f"{side}Foot", shin.tail,
-                 (cx + sx * h * 0.09, cy - h * 0.06, lo[2]), shin)
+            sh = bone(f"{side}Shoulder", core(sh_f) + (z(sh_f),),
+                      side_pt(arm_f[0], 0.42, sx), chest)
+            up = bone(f"{side}Arm", sh.tail, side_pt(arm_f[1], 0.80, sx), sh)
+            fore = bone(f"{side}ForeArm", up.tail, side_pt(arm_f[2], 0.82, sx), up)
+            bone(f"{side}Hand", fore.tail, side_pt(arm_f[3], 0.80, sx), fore)
+            thigh = bone(f"{side}UpLeg", side_pt(0.50, 0.34, sx),
+                         side_pt(0.28, 0.40, sx), hips)
+            shin = bone(f"{side}Leg", thigh.tail, side_pt(0.06, 0.42, sx), thigh)
+            fx, fy, fz = side_pt(0.02, 0.42, sx)
+            bone(f"{side}Foot", shin.tail, (fx, fy - h * 0.06, lo[2]), shin)
 
         # A cloak is not skin: it hangs off the shoulders and swings a beat
         # behind the body. Give it its own chain down the back BEFORE binding,
@@ -163,14 +287,22 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
         # chain with a verlet solver (scripts/cloak.gd) rather than a canned
         # wiggle -- the cloth reacts to how the character actually moved.
         if any("cloak" in e or "cape" in e for e in extras):
-            depth = hi[1] - lo[1]
-            back = cy + depth * 0.28          # behind the spine, inside the mesh
-            prev, top = None, z(0.84)
+            prev, top = None, z(sh_f + 0.02)
             for i in range(CLOAK_SEGMENTS):
                 a = top + (lo[2] - top) * (i / CLOAK_SEGMENTS)
                 b = top + (lo[2] - top) * ((i + 1) / CLOAK_SEGMENTS)
-                prev = bone(f"Cloak.{i}", (cx, back, a), (cx, back, b),
-                            prev or chest)
+                # follow the measured back surface rather than a fixed offset:
+                # a fixed one leaves the chain outside a slim figure and buried
+                # in the chest of a broad one
+                fa = (a - lo[2]) / (h or 1e-6)
+                fb = (b - lo[2]) / (h or 1e-6)
+                sa = slice_at(prof, lo[2], hi[2], fa)
+                sb = slice_at(prof, lo[2], hi[2], fb)
+                ya = sa["yc"] + sa["half_d"] * 0.55 if sa else cy
+                yb = sb["yc"] + sb["half_d"] * 0.55 if sb else cy
+                xa = sa["xc"] if sa else cx
+                xb = sb["xc"] if sb else cx
+                prev = bone(f"Cloak.{i}", (xa, ya, a), (xb, yb, b), prev or chest)
 
     else:
         # generic articulated spine along the longest horizontal axis
@@ -196,7 +328,19 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
     bpy.ops.object.select_all(action="DESELECT")
     mesh_obj.select_set(True); arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
+    weld(mesh_obj)
+    # Bone heat is solved for the BODY only. A cloak bone tracks the back
+    # surface, so it sits at the very edge of the volume and is the likeliest
+    # bone to have no solution -- and bone heat is all-or-nothing: one
+    # unsolvable bone returns zero weights for every bone, which is how a whole
+    # character ended up bound by raw distance with its hands on its thighs.
+    cloaks = [b for b in arm.data.bones if b.name.startswith("Cloak")]
+    for b in cloaks:
+        b.use_deform = False
     bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+    for b in cloaks:
+        b.use_deform = True
+
     if not weight_total(mesh_obj):
         # Bone heat needs clean manifold geometry and TRELLIS output is neither.
         # It fails with "failed to find solution for one or more bones", still
@@ -206,7 +350,89 @@ def procedural_rig(mesh_obj, body_plan, extras=()):
         # and the character slides through the level frozen in its rest pose.
         print("[motion] bone heat produced no weights — binding by distance")
         bind_by_distance(mesh_obj, arm)
+    else:
+        n = sum(1 for v in mesh_obj.data.vertices
+                if any(g.weight > 1e-6 for g in v.groups))
+        print(f"[motion] bone heat bound {n}/{len(mesh_obj.data.vertices)} verts")
+    if cloaks:
+        paint_cloak(mesh_obj, arm)
     return arm
+
+
+def paint_cloak(mesh_obj, arm, reach=0.55, strength=0.9):
+    """Hand the back-hanging geometry to the cloak chain.
+
+    Bone heat never sees these bones (see above), and letting it own the cloak
+    would be wrong anyway: a cape is not skin, and weighting it to the spine
+    makes it a rigid shell that turns with the chest instead of swinging behind
+    it. Weight is taken FROM the body groups rather than added alongside them,
+    so the total per vertex stays 1 and the cloth does not fight the torso.
+    """
+    to_local = mesh_obj.matrix_world.inverted() @ arm.matrix_world
+    chain = sorted((b for b in arm.data.bones if b.name.startswith("Cloak")),
+                   key=lambda b: -(to_local @ b.head_local).z)
+    if not chain:
+        return
+    groups = {b.name: (mesh_obj.vertex_groups.get(b.name)
+                       or mesh_obj.vertex_groups.new(name=b.name)) for b in chain}
+    spans = [((to_local @ b.head_local).z, (to_local @ b.tail_local).z, b.name)
+             for b in chain]
+    top = max(s[0] for s in spans)
+
+    ys = [v.co.y for v in mesh_obj.data.vertices]
+    y_mid = (max(ys) + min(ys)) / 2
+    y_back = max(ys)
+    if y_back - y_mid < 1e-6:
+        return
+
+    painted = 0
+    for v in mesh_obj.data.vertices:
+        if v.co.z > top:
+            continue                       # above the collar: shoulders, not cape
+        # how far toward the back surface this vertex sits, 0 at the spine
+        depth = (v.co.y - y_mid) / (y_back - y_mid)
+        if depth < reach:
+            continue
+        w = strength * min(1.0, (depth - reach) / max(1e-6, 1.0 - reach))
+        if w <= 1e-3:
+            continue
+        seg = min(spans, key=lambda s: abs((s[0] + s[1]) / 2 - v.co.z))[2]
+        for g in list(v.groups):
+            name = mesh_obj.vertex_groups[g.group].name
+            if not name.startswith("Cloak"):
+                mesh_obj.vertex_groups[g.group].add([v.index], g.weight * (1.0 - w),
+                                                    "REPLACE")
+        groups[seg].add([v.index], w, "REPLACE")
+        painted += 1
+    print(f"[motion] cloak: {painted} verts moved onto {len(chain)} segments")
+
+
+def weld(mesh_obj, threshold=0.0002):
+    """Merge the duplicate vertices glTF import creates, before any binding.
+
+    A .glb stores one vertex per (position, normal, uv) combination, so every
+    UV seam and every hard edge splits the vertex. The reference character
+    imported as 36994 vertices in 2032 disconnected islands -- topologically
+    shattered, even though it looks like one solid body. Bone heat solves a
+    diffusion across the surface, and a diffusion cannot cross a gap, so it
+    failed on every bone and the character fell back to a distance bind with its
+    hands weighted to its thighs.
+
+    Welding takes it to 16572 vertices in 2 components and costs nothing that
+    matters: UVs live on loops rather than vertices, so the texture is intact,
+    and the face count drops by one.
+    """
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh_obj.data)
+    before = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=threshold)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(mesh_obj.data)
+    bm.free()
+    mesh_obj.data.update()
+    print(f"[motion] welded {before} -> {len(mesh_obj.data.vertices)} verts "
+          f"(glTF seam duplicates; bone heat needs connected geometry)")
 
 
 def weight_total(mesh_obj):
@@ -890,9 +1116,18 @@ def procedural_extras(arm, clip, extras):
         return
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode="POSE")
-    dur = FPS
-    for f in range(dur + 1):
-        phase = 2 * math.pi * f / dur
+    # Span whatever the body clip already occupies. A fixed 30-frame cycle here
+    # extended every action to a round 1.00 s, so a 17-frame mined jab shipped
+    # with 13 frames of nothing on the end and combat.gd, scaling playback to
+    # match its frame data, stretched the punch to cover the padding.
+    act = arm.animation_data.action if arm.animation_data else None
+    if act and act.fcurves:
+        f0, f1 = int(act.frame_range[0]), int(act.frame_range[1])
+    else:
+        f0, f1 = 0, FPS
+    dur = max(1, f1 - f0)
+    for f in range(f0, f1 + 1):
+        phase = 2 * math.pi * (f - f0) / dur
         for pb in bones:
             name = pb.name.lower()
             pb.rotation_mode = "XYZ"
