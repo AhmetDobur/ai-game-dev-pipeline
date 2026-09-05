@@ -1084,12 +1084,25 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # at its own rest then puts our bone at OUR rest, whatever either rest
         # happens to be, which is the property both earlier attempts lacked.
         def ref_rot(bone, want, into):
-            """Bone's rest orientation, swung onto `want` if it is overridden."""
-            q = (into @ bone.matrix_local).to_quaternion()
+            """The bone's reference orientation: its own rest, or a canonical
+            basis pointing along `want` when it is overridden.
+
+            A minimal swing from the rest direction onto `want` sets the bone's
+            DIRECTION and leaves its roll wherever it happened to be. Roll on an
+            upper arm rotates the plane the elbow bends in, so the forearms
+            folded across the chest -- the two hands ended up 0.098 of body
+            height apart during a walk, against 0.493 at rest. Building the
+            basis outright, identically for both skeletons, makes the roll
+            agree by construction instead of by luck."""
             if want is None:
-                return q
-            have = (q @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
-            return have.rotation_difference(mathutils.Vector(want)) @ q
+                return (into @ bone.matrix_local).to_quaternion()
+            y = mathutils.Vector(want).normalized()
+            up = mathutils.Vector((0.0, 0.0, 1.0))
+            if abs(y.dot(up)) > 0.99:
+                up = mathutils.Vector((0.0, 1.0, 0.0))
+            z = (up - y * up.dot(y)).normalized()
+            x = y.cross(z)
+            return mathutils.Matrix((x, y, z)).transposed().to_quaternion()
 
         rest_t = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
         parent_of = {b.name: (b.parent.name if b.parent else None)
