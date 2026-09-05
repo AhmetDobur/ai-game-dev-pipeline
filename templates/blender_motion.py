@@ -491,6 +491,17 @@ _TRIAL_RE = re.compile(r"^(\d+_\d+)\s+(.*\S)\s*$")
 
 # Words the index uses for motions we ask for under a different name. Kept small
 # and literal on purpose -- this is a lookup aid, not a synonym engine.
+# Trials measured to actually do what their description says, checked before the
+# index search. CMU's own advice to prefer higher-numbered subjects is about
+# capture quality, not content, and following it alone picked 140_06 for "idle"
+# -- a trial whose performer spends it resting in a deep wide crouch. Retargeted
+# faithfully that is a character squatting like a sumo. Scoring every candidate's
+# knee bend across 25 trials put these at the top; 111_28 stands with its knees
+# straight (0 degrees) and its feet 0.145 of body height apart.
+_CLIP_PREFERRED = {
+    "idle": ("111_28", "113_21", "77_02"),
+}
+
 _CLIP_SYNONYMS = {
     "run": ("run", "jog"),
     "walk": ("walk",),
@@ -572,6 +583,9 @@ def find_cmu_clip(cmu_dir, clip):
     m = _VARIANT_RE.match(base)
     if m and m.group(1) in _CLIP_SYNONYMS:
         base, variant = m.group(1), int(m.group(2))
+    for trial in _CLIP_PREFERRED.get(base, ())[variant:]:
+        if trial in paths:
+            return paths[trial]
     words = _CLIP_SYNONYMS.get(base, (base,))
     hits = [trial for trial, desc in cmu_index(cmu_dir).items()
             if trial in paths and any(re.search(rf"\b{re.escape(w)}", desc) for w in words)]
