@@ -1139,6 +1139,7 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # than its own rest, less a small margin so it can still brush the body.
         down = mathutils.Vector((0.0, 0.0, -1.0))
         fwd = mathutils.Vector((0.0, 1.0, 0.0))
+        world_names = set(order)
         abduction = {}
         for tname in order:
             if tname.lower() not in ("leftarm", "rightarm"):
@@ -1149,18 +1150,28 @@ def retarget_onto(arm, bvh_path, clip_name=""):
                 # furthest from its floor rather than exempt from it
                 abduction[tname] = math.atan2(d.x, -d.z) * 0.9
 
-        def hold_arm_clear(q, limit):
-            """Push a hanging arm back out to its rest clearance."""
+        # The correction has to swing the whole arm about the shoulder. Applied
+        # to the upper arm alone it opened the shoulder and left the forearm on
+        # the source's absolute orientation, so the hand simply folded back in
+        # and only the elbow angle changed.
+        below = {}
+        for tname in abduction:
+            side = "Left" if tname.lower().startswith("left") else "Right"
+            below[tname] = [b for b in (f"{side}ForeArm", f"{side}Hand")
+                            if b in world_names]
+
+        def arm_clear_fix(q, limit):
+            """The rotation that opens a hanging arm back out to its rest
+            clearance, or None if it is already clear or is not hanging."""
             d = q @ mathutils.Vector((0.0, 1.0, 0.0))
             if d.z > -0.3:                  # raised or thrown forward: leave it
-                return q
-            have = math.atan2(d.x, -d.z)
-            delta = limit - have
-            if (limit >= 0.0 and delta <= 0.0) or (limit < 0.0 and delta >= 0.0):
-                return q                    # already out at least this far
+                return None
+            delta = limit - math.atan2(d.x, -d.z)
+            if (limit >= 0.0) == (delta <= 0.0):
+                return None                 # already out at least this far
             # about +Y a positive angle swings the bone's tip toward -x, so the
             # correction that opens the arm outward is the negated deficit
-            return mathutils.Quaternion(fwd, -delta) @ q
+            return mathutils.Quaternion(fwd, -delta)
 
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
@@ -1174,8 +1185,13 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             for tname in order:
                 sb = src.pose.bones[pair_map[tname]]
                 world[tname] = (src_to_arm @ sb.matrix).to_quaternion() @ corr[tname]
-            for tname, floor in abduction.items():
-                world[tname] = hold_arm_clear(world[tname], floor)
+            for tname, limit in abduction.items():
+                fix = arm_clear_fix(world[tname], limit)
+                if fix is None:
+                    continue
+                world[tname] = fix @ world[tname]
+                for child in below[tname]:
+                    world[child] = fix @ world[child]
             for tname in order:
                 par = parent_of[tname]
                 # an unmatched parent (a cloak root, say) stays at its rest
