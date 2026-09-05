@@ -8,9 +8,9 @@ class_name CombatController
 # and follows a cross with a left uppercut. That is the whole point of a combo
 # system -- the second beat is a different move, not the first one replayed.
 #
-# The clips themselves are real boxing mocap, cut out of continuous CMU
-# shadowboxing by templates/punch_mining.py, so a jab here is somebody's actual
-# jab rather than a procedural arm swing.
+# The clips themselves are authored per archetype in templates/blender_motion.py
+# -- the grappler plants and swings, the striker is bladed and leads with kicks
+# -- so the same six buttons play differently on each character.
 
 signal strike_started(move: String, chain: int)
 signal strike_landed(move: String, damage: float)
@@ -25,26 +25,38 @@ const COMBOS := {
 	"ee": "right_uppercut",
 }
 
-# Frame data at 60 fps, the rate fighting games are authored and discussed in.
+# Timing comes from the clips themselves rather than from a table of frames.
 #
-# startup  frames before the hand can hit anything
-# active   frames the hitbox is live
-# recovery frames after that before neutral
-# cancel   frame from which the next input chains, counted from the move's start
+# Each character's moveset is authored at its own tempo -- the grappler's hook
+# takes 0.75s and the striker's spinning backfist 0.42s -- so the animation
+# already knows this character's frame data. Reading it back means the hitbox
+# cannot drift from the picture, and a second character does not need a second
+# table that somebody has to remember to update.
 #
-# cancel sits inside recovery on purpose: chaining is allowed once the hitbox
-# closes but before the animation has fully settled, which is what makes a combo
-# feel connected instead of like two separate punches queued back to back.
-const FRAMES := {
-	"jab":            {"startup": 4, "active": 3, "recovery": 8,  "cancel": 9,  "damage": 4.0},
-	"cross":          {"startup": 6, "active": 3, "recovery": 12, "cancel": 11, "damage": 7.0},
-	"overhand":       {"startup": 9, "active": 4, "recovery": 16, "cancel": 15, "damage": 11.0},
-	"left_uppercut":  {"startup": 7, "active": 4, "recovery": 14, "cancel": 13, "damage": 9.0},
-	"right_uppercut": {"startup": 7, "active": 4, "recovery": 15, "cancel": 13, "damage": 10.0},
-	"left_bodyshot":  {"startup": 6, "active": 3, "recovery": 12, "cancel": 11, "damage": 6.0},
+# CONTACT is where in the clip the blow lands, as a fraction of its length. It
+# is the same instant the moveset authors as its contact key.
+const CONTACT := {
+	"jab":            0.52,
+	"cross":          0.58,
+	"overhand":       0.56,
+	"left_uppercut":  0.62,
+	"right_uppercut": 0.55,
+	"left_bodyshot":  0.58,
 }
 
-const FPS := 60.0
+const ACTIVE_SECONDS := 0.09    # how long the hitbox stays live
+const CANCEL_SLACK := 0.04      # chaining opens just after the hitbox shuts
+
+# Damage scales with how long the move takes. That is the genre's own bargain --
+# a slow button hurts more -- and it makes the archetype's damage fall out of
+# its animation: the grappler's committed swings hit hard because they are slow,
+# and the striker's fast buttons do not, with nothing to configure per character.
+const DAMAGE_PER_SECOND := 14.0
+
+const FALLBACK_SECONDS := 0.5   # a move whose clip is missing still has timing
+
+var _length: Dictionary = {}    # move -> seconds, read from the loaded clips
+
 const BUFFER_SECONDS := 0.28   # a press this long before the cancel window still lands
 const CHAIN_SECONDS := 0.45    # after this much neutral the chain is forgotten
 const MAX_CHAIN := 2           # the third beat lands when its table is written
@@ -64,10 +76,14 @@ func setup(anim: AnimationPlayer) -> void:
 	_anim = anim
 	# Strikes must not loop: a punch that loops is a windmill. Only the
 	# locomotion clips cycle, and player.gd has already set those.
-	if _anim:
-		for move in FRAMES.keys():
-			if _anim.has_animation(move):
-				_anim.get_animation(move).loop_mode = Animation.LOOP_NONE
+	for move in CONTACT.keys():
+		var seconds := FALLBACK_SECONDS
+		if _anim and _anim.has_animation(move):
+			var clip := _anim.get_animation(move)
+			clip.loop_mode = Animation.LOOP_NONE
+			if clip.length > 0.001:
+				seconds = clip.length
+		_length[move] = seconds
 
 
 func is_striking() -> bool:
@@ -99,15 +115,14 @@ func tick(delta: float) -> void:
 		return
 	_elapsed += delta
 
-	var f: Dictionary = FRAMES[_move]
-	var frame := _elapsed * FPS
-	if not _did_hit and frame >= f.startup and frame <= f.startup + f.active:
+	var contact := _contact_seconds(_move)
+	if not _did_hit and _elapsed >= contact and _elapsed <= contact + ACTIVE_SECONDS:
 		_did_hit = true
-		strike_landed.emit(_move, f.damage)
+		strike_landed.emit(_move, _damage(_move))
 
 	# a buffered press fires the moment the cancel window opens, provided it was
 	# not pressed so long ago that the player has plainly changed their mind
-	if _buffered != "" and frame >= f.cancel:
+	if _buffered != "" and _elapsed >= contact + ACTIVE_SECONDS + CANCEL_SLACK:
 		if _now - _buffered_at <= BUFFER_SECONDS:
 			var hand := _buffered
 			_buffered = ""
@@ -139,22 +154,24 @@ func _begin(hand: String) -> void:
 
 
 func _total_seconds(move: String) -> float:
-	var f: Dictionary = FRAMES[move]
-	return (f.startup + f.active + f.recovery) / FPS
+	return _length.get(move, FALLBACK_SECONDS)
+
+
+func _contact_seconds(move: String) -> float:
+	return _total_seconds(move) * float(CONTACT.get(move, 0.55))
+
+
+func _damage(move: String) -> float:
+	return _total_seconds(move) * DAMAGE_PER_SECOND
 
 
 func _play(move: String) -> void:
 	if _anim == null or not _anim.has_animation(move):
 		return
-	# The mocap clip is however long the performer's punch took; the frame data
-	# says how long this punch takes. Scale playback so the hitbox frames and
-	# the picture agree -- otherwise the hand lands visibly after the damage.
-	var want := _total_seconds(move)
-	var have := _anim.get_animation(move).length
-	var speed := 1.0
-	if have > 0.001 and want > 0.001:
-		speed = have / want
-	_anim.play(move, 0.06, speed)
+	# Played at its authored speed. The timing above is read back FROM the clip,
+	# so there is nothing left to reconcile -- the hitbox opens when the fist
+	# arrives because both are measured from the same animation.
+	_anim.play(move, 0.06)
 
 
 ## For a third beat later: extend COMBOS with three-hand keys and raise
