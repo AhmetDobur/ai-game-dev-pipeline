@@ -1032,6 +1032,46 @@ T_POSE_REF = {
 # to 21% on the run, and the arms came with them: "the arms and shoulders is
 # really in each other".
 
+def basis_toward(want):
+    """A full orientation for a bone pointing along `want`.
+
+    A direction alone does not pin a bone down -- the roll about its own axis is
+    still free, and roll on an upper arm decides which way the elbow bends. So
+    build the whole basis: the bone runs along `want` and its local Z leans
+    toward world up. Shared by the retarget and by authored poses, so both mean
+    the same thing by a direction.
+    """
+    y = mathutils.Vector(want).normalized()
+    up = mathutils.Vector((0.0, 0.0, 1.0))
+    if abs(y.dot(up)) > 0.99:
+        up = mathutils.Vector((0.0, 1.0, 0.0))
+    z = (up - y * up.dot(y)).normalized()
+    return mathutils.Matrix((y.cross(z), y, z)).transposed().to_quaternion()
+
+
+def solve_local(arm, world_rots):
+    """Local rotations that put each named bone at the given world orientation.
+
+    Blender composes a posed bone as W = W_parent . Rl . b, so b falls out as
+    (W_parent . Rl)^-1 . W once the parents are known. Bones left unnamed stay
+    at rest, which is what makes an authored pose safe on this mesh: the skin
+    was bound at rest, and every vertex the pose does not mention stays exactly
+    where the binding put it.
+    """
+    rest = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
+    parent = {b.name: (b.parent.name if b.parent else None) for b in arm.pose.bones}
+    depth = {b.name: len(b.parent_recursive) for b in arm.pose.bones}
+    world, out = {}, {}
+    for name in sorted(rest, key=lambda n: depth[n]):
+        par = parent[name]
+        wp = world[par] if par else mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
+        rl = (rest[par].inverted() @ rest[name]) if par else rest[name]
+        world[name] = world_rots.get(name) or (wp @ rl)
+        if name in world_rots:
+            out[name] = (wp @ rl).inverted() @ world[name]
+    return out
+
+
 def retarget_onto(arm, bvh_path, clip_name=""):
     """Sample a BVH and copy its per-bone local rotation onto `arm` (the armature the
     mesh is actually skinned to) by matching bone names. Returns the number of bones
@@ -1096,13 +1136,7 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             handled below."""
             if want is None:
                 return (into @ bone.matrix_local).to_quaternion()
-            y = mathutils.Vector(want).normalized()
-            up = mathutils.Vector((0.0, 0.0, 1.0))
-            if abs(y.dot(up)) > 0.99:
-                up = mathutils.Vector((0.0, 1.0, 0.0))
-            z = (up - y * up.dot(y)).normalized()
-            x = y.cross(z)
-            return mathutils.Matrix((x, y, z)).transposed().to_quaternion()
+            return basis_toward(want)
 
         rest_t = {b.name: b.bone.matrix_local.to_quaternion() for b in arm.pose.bones}
         parent_of = {b.name: (b.parent.name if b.parent else None)
@@ -1312,6 +1346,192 @@ def idle_from_rest(arm):
           f"({n} frames, {_IDLE_SECONDS:.0f}s loop)")
 
 
+# --- authored movesets ------------------------------------------------------
+#
+# Mined mocap tears this character. A CMU shadowboxing trial lunges deep and
+# twists hard, and on a 2.80 m body with a heavy coat the skin -- bound at rest
+# -- stretches into streaks. The rest-pose idle proved the other direction
+# works: poses near the bind pose hold together.
+#
+# So strikes are authored rather than retargeted, against a named reference used
+# as a specification. Pious Force is built to the grappler archetype: planted
+# feet, slow committed swings, damage in the body rather than in the hands. The
+# legs barely leave rest on purpose -- that is both what a grappler looks like
+# and what keeps the mesh intact.
+#
+# Directions are world-space in the rig's own frame: the character faces -Y,
+# up is +Z, his left is -X and his right is +X. A bone not named in a keyframe
+# stays at rest, so every vertex the pose does not speak for stays exactly where
+# the binding put it.
+_F, _B = (0.0, -1.0, 0.0), (0.0, 1.0, 0.0)
+_U, _D = (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)
+_L, _R = (-1.0, 0.0, 0.0), (1.0, 0.0, 0.0)
+
+
+def _dir(*parts):
+    """Blend named directions by weight: _dir((_F, 2), (_D, 1)) is forward-down."""
+    v = mathutils.Vector((0.0, 0.0, 0.0))
+    for d, w in parts:
+        v += mathutils.Vector(d) * w
+    return tuple(v.normalized())
+
+
+def _guard(sx):
+    """A grappler's guard on one side: hands low and wide, elbows out, chest
+    open. A boxer hides behind his gloves; this man is waiting to grab you."""
+    out = (_L if sx < 0 else _R)
+    return {
+        f"{'Left' if sx < 0 else 'Right'}Arm": _dir((_D, 2.4), (out, 1.0), (_F, 0.5)),
+        f"{'Left' if sx < 0 else 'Right'}ForeArm": _dir((_F, 1.6), (out, 0.7), (_U, 0.5)),
+        f"{'Left' if sx < 0 else 'Right'}Hand": _dir((_F, 1.8), (out, 0.4), (_U, 0.2)),
+    }
+
+
+def _both(fn):
+    d = {}
+    d.update(fn(-1))
+    d.update(fn(1))
+    return d
+
+
+def _reach(sx, up=0.0, across=0.0):
+    """One arm thrown out in front, optionally rising or crossing the body."""
+    side = "Left" if sx < 0 else "Right"
+    out = (_L if sx < 0 else _R)
+    inward = (_R if sx < 0 else _L)
+    return {
+        f"{side}Arm": _dir((_F, 2.0), (_U, up), (out, 0.5), (inward, across)),
+        f"{side}ForeArm": _dir((_F, 2.4), (_U, up * 1.4), (inward, across)),
+        f"{side}Hand": _dir((_F, 2.6), (_U, up * 1.4), (inward, across)),
+    }
+
+
+def _wind(sx):
+    """Cocked back and low, the frame before a heavy swing leaves."""
+    side = "Left" if sx < 0 else "Right"
+    out = (_L if sx < 0 else _R)
+    return {
+        f"{side}Arm": _dir((_D, 1.6), (_B, 1.2), (out, 1.2)),
+        f"{side}ForeArm": _dir((_B, 1.6), (out, 1.0), (_U, 0.6)),
+        f"{side}Hand": _dir((_B, 1.4), (out, 1.0), (_U, 0.8)),
+    }
+
+
+def _lean(pitch=0.0, twist=0.0):
+    """Torso attitude: pitch forward/back, twist toward one side."""
+    return {
+        "Hips": _dir((_U, 6.0), (_F, pitch * 0.5), (_R, twist * 0.35)),
+        "Spine": _dir((_U, 5.0), (_F, pitch), (_R, twist * 0.5)),
+        "Spine1": _dir((_U, 4.5), (_F, pitch * 1.2), (_R, twist * 0.7)),
+    }
+
+
+def _merge(*ds):
+    out = {}
+    for d in ds:
+        out.update(d)
+    return out
+
+
+GRAPPLER = {
+    # a grappler's light: still a heavy shovel of a punch, just a fast one
+    "jab": dict(seconds=0.55, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.30, _merge(_both(_guard), _wind(1), _lean(pitch=-0.2, twist=0.5))),
+        (0.55, _merge(_guard(-1), _reach(1), _lean(pitch=0.5, twist=-0.4))),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+    # a wide committed hook that turns the whole body through the target
+    "cross": dict(seconds=0.80, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.32, _merge(_guard(-1), _wind(1), _lean(pitch=-0.3, twist=0.9))),
+        (0.60, _merge(_guard(-1), _reach(1, across=0.9), _lean(pitch=0.6, twist=-0.9))),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+    # headbutt: rear back, then drive the skull down and forward
+    "overhand": dict(seconds=0.95, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.34, _merge(_both(_guard), _lean(pitch=-0.7),
+                      {"Neck": _dir((_U, 2.0), (_B, 1.0)),
+                       "Head": _dir((_U, 2.0), (_B, 1.2))})),
+        (0.56, _merge(_both(_guard), _lean(pitch=1.3),
+                      {"Neck": _dir((_F, 1.6), (_U, 0.5)),
+                       "Head": _dir((_F, 2.0), (_D, 0.3))})),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+    # spinning lariat: both arms straight out, the body carried round by them
+    "left_uppercut": dict(seconds=1.15, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.22, _merge({"LeftArm": _dir((_L, 2.0), (_B, 0.8)),
+                       "LeftForeArm": _dir((_L, 2.2), (_B, 0.6)),
+                       "LeftHand": _dir((_L, 2.4), (_B, 0.4)),
+                       "RightArm": _dir((_R, 2.0), (_F, 0.8)),
+                       "RightForeArm": _dir((_R, 2.2), (_F, 0.6)),
+                       "RightHand": _dir((_R, 2.4), (_F, 0.4))},
+                      _lean(twist=-1.0))),
+        (0.62, _merge({"LeftArm": _dir((_L, 2.2),), "LeftForeArm": _dir((_L, 2.4),),
+                       "LeftHand": _dir((_L, 2.6),),
+                       "RightArm": _dir((_R, 2.2),), "RightForeArm": _dir((_R, 2.4),),
+                       "RightHand": _dir((_R, 2.6),)},
+                      _lean(pitch=0.3, twist=1.0))),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+    # command grab: both hands out, clamp, then haul upward off the ground
+    "right_uppercut": dict(seconds=1.20, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.30, _merge(_reach(-1), _reach(1), _lean(pitch=0.7))),
+        (0.52, _merge(_reach(-1, across=0.5), _reach(1, across=0.5),
+                      _lean(pitch=0.9))),
+        (0.78, _merge(_reach(-1, up=1.6), _reach(1, up=1.6), _lean(pitch=-0.6))),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+    # body splash: both arms up, then everything down at once
+    "left_bodyshot": dict(seconds=0.90, keys=[
+        (0.00, _merge(_both(_guard), _lean())),
+        (0.36, _merge({"LeftArm": _dir((_U, 2.0), (_L, 0.8)),
+                       "LeftForeArm": _dir((_U, 2.4), (_L, 0.5)),
+                       "LeftHand": _dir((_U, 2.6),),
+                       "RightArm": _dir((_U, 2.0), (_R, 0.8)),
+                       "RightForeArm": _dir((_U, 2.4), (_R, 0.5)),
+                       "RightHand": _dir((_U, 2.6),)},
+                      _lean(pitch=-0.5))),
+        (0.58, _merge(_reach(-1), _reach(1), _lean(pitch=1.4))),
+        (1.00, _merge(_both(_guard), _lean())),
+    ]),
+}
+
+MOVESETS = {"grappler": GRAPPLER}
+
+
+def authored_clip(arm, clip, moveset):
+    """Keyframe a move from its authored poses. Returns True if it exists here."""
+    spec = MOVESETS.get(moveset, {}).get(clip.lower())
+    if not spec:
+        return False
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    n = max(2, int(spec["seconds"] * FPS))
+    for t, dirs in spec["keys"]:
+        f = int(round(t * n))
+        want = {b: basis_toward(d) for b, d in dirs.items()
+                if b in arm.pose.bones}
+        local = solve_local(arm, want)
+        for name, pb in ((b.name, b) for b in arm.pose.bones):
+            if any(k in name.lower()
+                   for k in ("tail", "jaw", "wing", "cloak", "cape")):
+                continue        # procedural_extras owns these, in euler
+            pb.rotation_mode = "QUATERNION"
+            pb.rotation_quaternion = local.get(
+                name, mathutils.Quaternion((1.0, 0.0, 0.0, 0.0)))
+            pb.keyframe_insert("rotation_quaternion", frame=f)
+            if f == 0:
+                pb.keyframe_insert("rotation_mode", frame=f)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    print(f"[motion] {clip}: authored {moveset} move "
+          f"({n} frames, {spec['seconds']:.2f}s)")
+    return True
+
+
 def procedural_clip(arm, clip):
     """Keyframe a short looping base cycle by rule. Works for ANY rig — it just
     oscillates whatever body bones exist (arms/legs/spine/generic segments)."""
@@ -1463,17 +1683,18 @@ def main():
     for clip in ARGS.get("animations", ["idle"]):
         if arm.animation_data:
             arm.animation_data.action = None    # fresh action per clip
+        moveset = ARGS.get("moveset", "")
         if clip.lower().split("_")[0] == "idle":
             idle_from_rest(arm)                 # the rest pose IS the concept art
             PROVENANCE[clip] = "rest-pose idle"
-            bvh = None
+        elif authored_clip(arm, clip, moveset):
+            PROVENANCE[clip] = f"authored:{moveset}"
         else:
             bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""),
                           ARGS.get("kimodo_url", ""), out_dir)
-        if not (clip.lower().split("_")[0] == "idle"
-                or (bvh and retarget_onto(arm, bvh, clip))):
-            procedural_clip(arm, clip)          # base body motion (never leaves it static)
-            PROVENANCE[clip] = "procedural"     # retarget may have rejected the bvh too
+            if not (bvh and retarget_onto(arm, bvh, clip)):
+                procedural_clip(arm, clip)      # never leaves the body static
+                PROVENANCE[clip] = "procedural" # retarget may have rejected it too
         procedural_extras(arm, clip, extras)    # tail/jaw/wings on EVERY path
         act = arm.animation_data.action if arm.animation_data else None
         if act:
