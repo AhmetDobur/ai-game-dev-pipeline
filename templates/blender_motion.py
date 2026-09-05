@@ -1438,12 +1438,33 @@ def _wind(sx):
     }
 
 
+def _bend(pitch, twist):
+    """A tilt away from whatever this rig's rest direction happens to be.
+
+    Returned as a function of the rest direction rather than a fixed vector,
+    because the torso must be posed RELATIVE to the bind pose. Aiming the spine
+    at absolute vertical looks right in the abstract and is wrong here: the
+    concept art this character was built from stands with a slight backward
+    lean, so an absolute aim straightened him on frame one of every strike and
+    snapped the silhouette off the idle that was approved.
+    """
+    def tilt(rest):
+        v = (rest + mathutils.Vector(_F) * pitch + mathutils.Vector(_R) * twist)
+        return tuple(v.normalized())
+    return tilt
+
+
 def _lean(pitch=0.0, twist=0.0):
-    """Torso attitude: pitch forward/back, twist toward one side."""
+    """Torso attitude: pitch forward/back, twist toward one side.
+
+    Neutral keys nothing at all, so an unleaned frame is the rest pose exactly.
+    """
+    if not pitch and not twist:
+        return {}
     return {
-        "Hips": _dir((_U, 6.0), (_F, pitch * 0.5), (_R, twist * 0.35)),
-        "Spine": _dir((_U, 5.0), (_F, pitch), (_R, twist * 0.5)),
-        "Spine1": _dir((_U, 4.5), (_F, pitch * 1.2), (_R, twist * 0.7)),
+        "Hips": _bend(pitch * 0.08, twist * 0.06),
+        "Spine": _bend(pitch * 0.20, twist * 0.10),
+        "Spine1": _bend(pitch * 0.27, twist * 0.16),
     }
 
 
@@ -1537,8 +1558,14 @@ def authored_clip(arm, clip, moveset):
     frames, track = [], {}
     for t, dirs in spec["keys"]:
         frames.append(int(round(t * n)))
-        want = {b: aim_world(rest_w[b], d) for b, d in dirs.items()
-                if b in arm.pose.bones}
+        want = {}
+        for b, d in dirs.items():
+            if b not in arm.pose.bones:
+                continue
+            rq = rest_w[b]
+            if callable(d):     # a tilt relative to this rig's own rest pose
+                d = d(rq @ mathutils.Vector((0.0, 1.0, 0.0)))
+            want[b] = aim_world(rq, d)
         local = solve_local(arm, want)
         for pb in arm.pose.bones:
             if any(k in pb.name.lower()
