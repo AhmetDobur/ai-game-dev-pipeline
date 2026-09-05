@@ -1397,45 +1397,107 @@ def _dir(*parts):
     return (x / n, y / n, z / n)
 
 
-def _guard(sx):
-    """A grappler's guard on one side: hands low and wide, elbows out, chest
-    open. A boxer hides behind his gloves; this man is waiting to grab you."""
-    out = (_L if sx < 0 else _R)
-    return {
-        f"{'Left' if sx < 0 else 'Right'}Arm": _dir((_D, 2.4), (out, 1.0), (_F, 0.5)),
-        f"{'Left' if sx < 0 else 'Right'}ForeArm": _dir((_F, 1.6), (out, 0.7), (_U, 0.5)),
-        f"{'Left' if sx < 0 else 'Right'}Hand": _dir((_F, 1.8), (out, 0.4), (_U, 0.2)),
-    }
+def _fist(sx, fwd, out, up, elbow=(0.0, -0.3, -1.0)):
+    """Put one fist at a target, measured in arm-lengths from its own shoulder.
 
+    Strikes used to be authored as a direction per bone, which made the fist's
+    position an emergent property of three separate guesses. It went wrong in
+    the way that is hard to see and impossible to tune: the neutral guard
+    already held the hand two thirds of the way into a punch, so a jab had
+    almost no visible travel and had to wind up half a metre behind the
+    shoulder to read as a strike at all -- a windmill.
 
-def _both(fn):
-    d = {}
-    d.update(fn(-1))
-    d.update(fn(1))
-    return d
-
-
-def _reach(sx, up=0.0, across=0.0):
-    """One arm thrown out in front, optionally rising or crossing the body."""
+    A fist target is what a fight animator actually specifies, and stated in
+    arm-lengths it is rig-independent: 1.0 forward is full extension for a
+    2.8 m giant and for a 1.6 m one. `out` is away from the body on that side,
+    so a negative value crosses the centre line -- which is what a hook does.
+    """
     side = "Left" if sx < 0 else "Right"
-    out = (_L if sx < 0 else _R)
-    inward = (_R if sx < 0 else _L)
-    return {
-        f"{side}Arm": _dir((_F, 2.0), (_U, up), (out, 0.5), (inward, across)),
-        f"{side}ForeArm": _dir((_F, 2.4), (_U, up * 1.4), (inward, across)),
-        f"{side}Hand": _dir((_F, 2.6), (_U, up * 1.4), (inward, across)),
-    }
+    return {"_ik": {side: ((fwd, out * (1.0 if sx > 0 else -1.0), up), elbow)}}
 
 
-def _wind(sx):
-    """Cocked back and low, the frame before a heavy swing leaves."""
-    side = "Left" if sx < 0 else "Right"
-    out = (_L if sx < 0 else _R)
-    return {
-        f"{side}Arm": _dir((_D, 1.6), (_B, 1.2), (out, 1.2)),
-        f"{side}ForeArm": _dir((_B, 1.6), (out, 1.0), (_U, 0.6)),
-        f"{side}Hand": _dir((_B, 1.4), (out, 1.0), (_U, 0.8)),
-    }
+def _fists(fwd, out, up, elbow=(0.0, -0.3, -1.0)):
+    """Both fists, mirrored."""
+    return _merge(_fist(-1, fwd, out, up, elbow), _fist(1, fwd, out, up, elbow))
+
+
+def _guard():
+    """A grappler's guard: hands open, low, in front of the belly, elbows out.
+
+    A boxer hides behind his gloves. This man is waiting to grab you, so the
+    hands sit where they can close on something rather than where they protect
+    the head -- and low enough that a punch from here has somewhere to travel.
+    """
+    return _fists(0.34, 0.30, -0.36)
+
+
+def solve_arm(arm, side, target, pole, rest_w):
+    """Two-bone IK from a fist target: shoulder and elbow angles that reach it.
+
+    Returns world rotations for the three arm bones, or {} if the rig has no
+    such chain. The elbow is placed by a pole vector rather than left free,
+    because the plane the elbow bends in is what separates a punch from a
+    chicken wing, and a direction alone does not determine it.
+    """
+    names = [f"{side}Arm", f"{side}ForeArm", f"{side}Hand"]
+    if any(n not in arm.pose.bones for n in names):
+        return {}
+    upper, fore, hand = (arm.pose.bones[n].bone for n in names)
+    shoulder = upper.head_local
+    l1 = (fore.head_local - upper.head_local).length
+    l2 = (hand.head_local - fore.head_local).length
+    if l1 <= 0.0 or l2 <= 0.0:
+        return {}
+
+    v = mathutils.Vector((target[1], -target[0], target[2]))   # out, fwd, up
+    if v.length > 0.98:
+        v = v.normalized() * 0.98      # never fully lock the elbow straight
+    goal = shoulder + v * (l1 + l2)
+
+    reach = goal - shoulder
+    d = max(1e-5, min(reach.length, l1 + l2 - 1e-4))
+    u = reach.normalized()
+    cos_a = max(-1.0, min(1.0, (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)))
+    a = math.acos(cos_a)
+
+    pole_v = mathutils.Vector((pole[1], -pole[0], pole[2]))
+    axis = u.cross(pole_v)
+    if axis.length < 1e-6:
+        axis = u.cross(mathutils.Vector((0.0, 0.0, 1.0)))
+    if axis.length < 1e-6:
+        return {}
+    axis.normalize()
+
+    # Both rotation signs reach the target; the one that swings the elbow
+    # toward the pole is the one that looks like an arm.
+    best = None
+    for sign in (1.0, -1.0):
+        cand = u.copy()
+        cand.rotate(mathutils.Quaternion(axis, sign * a))
+        score = (cand * l1).dot(pole_v)
+        if best is None or score > best[0]:
+            best = (score, cand)
+    upper_dir = best[1]
+
+    elbow_pos = shoulder + upper_dir * l1
+    fore_dir = (goal - elbow_pos)
+    if fore_dir.length < 1e-6:
+        fore_dir = upper_dir.copy()
+    fore_dir.normalize()
+
+    # The check that matters, run on the real rig on every build: the solved
+    # chain has to actually end where the move said the fist goes. Reaching the
+    # target is guaranteed by the law of cosines only if the axis and sign are
+    # right, and those are exactly what a silent geometry bug gets wrong.
+    landed = elbow_pos + fore_dir * l2
+    miss = (landed - goal).length / (l1 + l2)
+    if miss > 0.02:
+        print(f"[motion] WARNING {side} fist missed its target by "
+              f"{miss * 100:.0f}% of arm reach")
+
+    return {names[0]: aim_world(rest_w[names[0]], upper_dir),
+            names[1]: aim_world(rest_w[names[1]], fore_dir),
+            names[2]: aim_world(rest_w[names[2]], fore_dir)}
 
 
 def _bend(pitch, twist):
@@ -1471,74 +1533,75 @@ def _lean(pitch=0.0, twist=0.0):
 def _merge(*ds):
     out = {}
     for d in ds:
-        out.update(d)
+        for k, v in d.items():
+            if k == "_ik":
+                out.setdefault("_ik", {}).update(v)   # one entry per side
+            else:
+                out[k] = v
     return out
 
 
 GRAPPLER = {
-    # a grappler's light: still a heavy shovel of a punch, just a fast one
-    "jab": dict(seconds=0.55, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.30, _merge(_both(_guard), _wind(1), _lean(pitch=-0.2, twist=0.5))),
-        (0.55, _merge(_guard(-1), _reach(1), _lean(pitch=0.5, twist=-0.4))),
-        (1.00, _merge(_both(_guard), _lean())),
+    # The light button. A grappler's fast punch is still a shovel, but it has
+    # next to no windup -- the fist starts low and goes, and the weight is in
+    # the step behind it rather than in a backswing.
+    "jab": dict(seconds=0.45, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.28, _merge(_guard(), _fist(1, 0.18, 0.26, -0.28),
+                      _lean(pitch=-0.15, twist=0.35))),
+        (0.52, _merge(_fist(-1, 0.30, 0.32, -0.40), _fist(1, 0.88, 0.14, -0.12),
+                      _lean(pitch=0.45, twist=-0.35))),
+        (1.00, _merge(_guard(), _lean())),
     ]),
-    # a wide committed hook that turns the whole body through the target
-    "cross": dict(seconds=0.80, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.32, _merge(_guard(-1), _wind(1), _lean(pitch=-0.3, twist=0.9))),
-        (0.60, _merge(_guard(-1), _reach(1, across=0.9), _lean(pitch=0.6, twist=-0.9))),
-        (1.00, _merge(_both(_guard), _lean())),
+    # The heavy hook. The fist chambers beside the ribs, never behind the back:
+    # the power in this punch is the torso turning through it, and a hand that
+    # travels behind its own shoulder reads as a windmill rather than a strike.
+    "cross": dict(seconds=0.75, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.30, _merge(_fist(-1, 0.34, 0.30, -0.30), _fist(1, 0.04, 0.46, -0.16),
+                      _lean(pitch=-0.25, twist=0.85))),
+        (0.58, _merge(_fist(-1, 0.22, 0.36, -0.42), _fist(1, 0.78, -0.24, 0.02),
+                      _lean(pitch=0.50, twist=-0.85))),
+        (1.00, _merge(_guard(), _lean())),
     ]),
-    # headbutt: rear back, then drive the skull down and forward
-    "overhand": dict(seconds=0.95, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.34, _merge(_both(_guard), _lean(pitch=-0.7),
+    # Headbutt. Hands stay in guard the whole way -- this one is all spine, and
+    # the hit is the skull arriving after the lean has already committed.
+    "overhand": dict(seconds=0.85, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.34, _merge(_guard(), _lean(pitch=-0.7),
                       {"Neck": _dir((_U, 2.0), (_B, 1.0)),
                        "Head": _dir((_U, 2.0), (_B, 1.2))})),
-        (0.56, _merge(_both(_guard), _lean(pitch=1.3),
+        (0.56, _merge(_fists(0.52, 0.34, -0.30), _lean(pitch=1.3),
                       {"Neck": _dir((_F, 1.6), (_U, 0.5)),
                        "Head": _dir((_F, 2.0), (_D, 0.3))})),
-        (1.00, _merge(_both(_guard), _lean())),
+        (1.00, _merge(_guard(), _lean())),
     ]),
-    # spinning lariat: both arms straight out, the body carried round by them
-    "left_uppercut": dict(seconds=1.15, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.22, _merge({"LeftArm": _dir((_L, 2.0), (_B, 0.8)),
-                       "LeftForeArm": _dir((_L, 2.2), (_B, 0.6)),
-                       "LeftHand": _dir((_L, 2.4), (_B, 0.4)),
-                       "RightArm": _dir((_R, 2.0), (_F, 0.8)),
-                       "RightForeArm": _dir((_R, 2.2), (_F, 0.6)),
-                       "RightHand": _dir((_R, 2.4), (_F, 0.4))},
+    # Spinning lariat: both arms locked straight out sideways and the body
+    # carried round by them. The arms lead the turn and then hold while the
+    # torso catches up, which is what makes it read as spinning rather than
+    # as two separate arm swings.
+    "left_uppercut": dict(seconds=1.05, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.22, _merge(_fist(-1, -0.20, 0.90, 0.10), _fist(1, 0.30, 0.86, 0.10),
                       _lean(twist=-1.0))),
-        (0.62, _merge({"LeftArm": _dir((_L, 2.2),), "LeftForeArm": _dir((_L, 2.4),),
-                       "LeftHand": _dir((_L, 2.6),),
-                       "RightArm": _dir((_R, 2.2),), "RightForeArm": _dir((_R, 2.4),),
-                       "RightHand": _dir((_R, 2.6),)},
-                      _lean(pitch=0.3, twist=1.0))),
-        (1.00, _merge(_both(_guard), _lean())),
+        (0.62, _merge(_fists(0.0, 0.94, 0.06), _lean(pitch=0.3, twist=1.0))),
+        (1.00, _merge(_guard(), _lean())),
     ]),
-    # command grab: both hands out, clamp, then haul upward off the ground
-    "right_uppercut": dict(seconds=1.20, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.30, _merge(_reach(-1), _reach(1), _lean(pitch=0.7))),
-        (0.52, _merge(_reach(-1, across=0.5), _reach(1, across=0.5),
-                      _lean(pitch=0.9))),
-        (0.78, _merge(_reach(-1, up=1.6), _reach(1, up=1.6), _lean(pitch=-0.6))),
-        (1.00, _merge(_both(_guard), _lean())),
+    # Command grab: both hands out, clamp shut, then haul the whole weight up
+    # off the ground. The lean reverses on the lift -- he sits back under it.
+    "right_uppercut": dict(seconds=1.10, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.30, _merge(_fists(0.80, 0.26, -0.14), _lean(pitch=0.7))),
+        (0.52, _merge(_fists(0.72, 0.08, 0.02), _lean(pitch=0.9))),
+        (0.78, _merge(_fists(0.34, 0.24, 0.78), _lean(pitch=-0.6))),
+        (1.00, _merge(_guard(), _lean())),
     ]),
-    # body splash: both arms up, then everything down at once
-    "left_bodyshot": dict(seconds=0.90, keys=[
-        (0.00, _merge(_both(_guard), _lean())),
-        (0.36, _merge({"LeftArm": _dir((_U, 2.0), (_L, 0.8)),
-                       "LeftForeArm": _dir((_U, 2.4), (_L, 0.5)),
-                       "LeftHand": _dir((_U, 2.6),),
-                       "RightArm": _dir((_U, 2.0), (_R, 0.8)),
-                       "RightForeArm": _dir((_U, 2.4), (_R, 0.5)),
-                       "RightHand": _dir((_U, 2.6),)},
-                      _lean(pitch=-0.5))),
-        (0.58, _merge(_reach(-1), _reach(1), _lean(pitch=1.4))),
-        (1.00, _merge(_both(_guard), _lean())),
+    # Body splash: everything overhead, then everything down at once.
+    "left_bodyshot": dict(seconds=0.80, keys=[
+        (0.00, _merge(_guard(), _lean())),
+        (0.36, _merge(_fists(0.10, 0.42, 0.86), _lean(pitch=-0.5))),
+        (0.58, _merge(_fists(0.66, 0.30, -0.48), _lean(pitch=1.4))),
+        (1.00, _merge(_guard(), _lean())),
     ]),
 }
 
@@ -1560,12 +1623,14 @@ def authored_clip(arm, clip, moveset):
         frames.append(int(round(t * n)))
         want = {}
         for b, d in dirs.items():
-            if b not in arm.pose.bones:
+            if b == "_ik" or b not in arm.pose.bones:
                 continue
             rq = rest_w[b]
             if callable(d):     # a tilt relative to this rig's own rest pose
                 d = d(rq @ mathutils.Vector((0.0, 1.0, 0.0)))
             want[b] = aim_world(rq, d)
+        for side, (target, pole) in dirs.get("_ik", {}).items():
+            want.update(solve_arm(arm, side, target, pole, rest_w))
         local = solve_local(arm, want)
         for pb in arm.pose.bones:
             if any(k in pb.name.lower()
