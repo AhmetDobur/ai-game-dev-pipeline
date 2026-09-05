@@ -601,8 +601,18 @@ _TRIAL_RE = re.compile(r"^(\d+_\d+)\s+(.*\S)\s*$")
 # faithfully that is a character squatting like a sumo. Scoring every candidate's
 # knee bend across 25 trials put these at the top; 111_28 stands with its knees
 # straight (0 degrees) and its feet 0.145 of body height apart.
+# Named trials that are plainly what the clip is supposed to be. Ranking by
+# subject number alone picks specialty sessions: it chose 144_33 "Walking" for
+# the walk, but subject 144 is a martial-arts and yoga session -- Blocks,
+# Kicking, Lunges, Sun Salutation -- so its walk is a fighter's crouched,
+# short-strided combat-ready gait, and the character read as hunched and
+# shuffling. The run went to 143_04 "Run Figure 8", which turns continuously
+# and never gives a straight cycle. Subjects 02-09 are the plain locomotion
+# sessions and are what these clips actually want.
 _CLIP_PREFERRED = {
     "idle": ("111_28", "113_21", "77_02"),
+    "walk": ("07_01", "07_02", "08_01", "02_01", "05_01", "35_01"),
+    "run": ("09_01", "09_02", "16_55", "02_03", "35_17"),
 }
 
 _CLIP_SYNONYMS = {
@@ -669,7 +679,10 @@ def find_cmu_clip(cmu_dir, clip):
 
     CMU's own advice is to prefer higher-numbered subjects ("the lower numbers
     contain some of our earliest motion capture sessions"), so candidates are
-    ranked that way and the best one is returned.
+    ranked that way and the best one is returned. That advice is about capture
+    quality, though, and the high-numbered sessions are specialty ones -- so
+    _CLIP_PREFERRED overrides it for the clips where a plain, unstylised take
+    matters more than a clean one.
     """
     if not cmu_dir or not os.path.isdir(cmu_dir):
         return None
