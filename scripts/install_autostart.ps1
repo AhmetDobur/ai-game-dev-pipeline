@@ -51,8 +51,15 @@ if ($ComfyDir) {
     if (-not (Test-Path $cpy) -or -not (Test-Path $cmain)) {
         throw "ComfyDir doesn't look like a ComfyUI portable dir: $ComfyDir"
     }
+    # --force-fp16 is not a quality setting, it is the difference between a
+    # character taking an hour and taking four. Trellis2 loads at fp32 by
+    # default: 19709 MB of weights on a 24 GB card, so there is no room left for
+    # activations and the weights stream over PCIe every step. Measured on the
+    # Titan RTX at identical sampler settings, the heavy stage went 165 s/it ->
+    # 35 s/it and the staged size 19709 MB -> 9854 MB. Turing has fp16 tensor
+    # cores and no fp32 equivalent, so this is where the time was going.
     $caction = New-ScheduledTaskAction -Execute $cpy `
-        -Argument "-s `"$cmain`" --listen 127.0.0.1 --port 8188" `
+        -Argument "-s `"$cmain`" --listen 127.0.0.1 --port 8188 --disable-smart-memory --force-fp16" `
         -WorkingDirectory $ComfyDir
     Register-ScheduledTask -TaskName "AIGameDevComfyUI" -Action $caction -Trigger $trigger `
         -Settings $settings -Principal $principal -Force | Out-Null

@@ -73,6 +73,26 @@ longest = max(dx, dy, dz) or 1.0
 shortest = min(dx, dy, dz) or 1.0
 metrics["aspect"] = round(longest / shortest, 4)
 
+# top-slice width: how wide the mesh still is in its top 8%, relative to its
+# widest point. A whole standing figure tapers to a head there (~0.29 measured
+# on a good character); one the remesher cut off at the chest or waist is still
+# nearly full width (0.97 and 0.69 measured). This is the truncation detector --
+# height/width cannot do the job, because a robed character measures 1.91x
+# taller than wide and a decapitated one 1.85x.
+try:
+    pts = [o.matrix_world @ v.co for o in meshes for v in o.data.vertices]
+    top = hi.z - (hi.z - lo.z) * 0.08
+    band = [p_ for p_ in pts if p_.z >= top]
+    widest = max(dx, dy) or 1.0
+    if band:
+        bw = max(max(p_.x for p_ in band) - min(p_.x for p_ in band),
+                 max(p_.y for p_ in band) - min(p_.y for p_ in band))
+        metrics["top_width_ratio"] = round(bw / widest, 4)
+    else:
+        metrics["top_width_ratio"] = None
+except Exception:
+    metrics["top_width_ratio"] = None
+
 # fill ratio: a figure with limbs leaves most of its bounding box empty; a
 # solid block fills nearly all of it. This is the "it came out a rectangle"
 # detector, and it needs no notion of what the subject was supposed to be.
