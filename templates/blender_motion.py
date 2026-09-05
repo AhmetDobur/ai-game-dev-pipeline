@@ -1087,13 +1087,13 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             """The bone's reference orientation: its own rest, or a canonical
             basis pointing along `want` when it is overridden.
 
-            A minimal swing from the rest direction onto `want` sets the bone's
-            DIRECTION and leaves its roll wherever it happened to be. Roll on an
-            upper arm rotates the plane the elbow bends in, so the forearms
-            folded across the chest -- the two hands ended up 0.098 of body
-            height apart during a walk, against 0.493 at rest. Building the
-            basis outright, identically for both skeletons, makes the roll
-            agree by construction instead of by luck."""
+            Building the basis outright rather than swinging the rest pose onto
+            `want` also fixes the roll, which a minimal swing leaves wherever it
+            happened to be -- and roll on an upper arm rotates the plane its
+            elbow bends in. For an overridden bone this makes the correction
+            exactly identity, which is the honest statement of what the arms
+            want: put ours where theirs is. Clearance is a separate problem,
+            handled below."""
             if want is None:
                 return (into @ bone.matrix_local).to_quaternion()
             y = mathutils.Vector(want).normalized()
@@ -1128,6 +1128,37 @@ def retarget_onto(arm, bvh_path, clip_name=""):
         # rotation that lands it on the orientation we want is
         # (W_parent . Rl)^-1 . W. Parents have to be solved first: that is what
         # the depth sort above is for.
+        # A CMU performer is an ordinary build. This character is a broad man in
+        # a heavy coat, and his rig is fitted to that silhouette -- his hands
+        # rest 0.255 of his height out from the centre line because that is
+        # where the art puts them. Copying arm orientations straight across
+        # walked his hands in to 0.067, which is inside his own chest.
+        #
+        # The rest pose is the measurement of where the body actually is, so
+        # take it as the floor: an arm hanging at the side may not sit closer in
+        # than its own rest, less a small margin so it can still brush the body.
+        down = mathutils.Vector((0.0, 0.0, -1.0))
+        fwd = mathutils.Vector((0.0, 1.0, 0.0))
+        abduction = {}
+        for tname in order:
+            if tname.lower() not in ("leftarm", "rightarm"):
+                continue
+            d = rest_t[tname] @ mathutils.Vector((0.0, 1.0, 0.0))
+            if d.z < -0.1:
+                abduction[tname] = (math.atan2(abs(d.x), -d.z) * 0.8,
+                                    1.0 if d.x > 0 else -1.0)
+
+        def hold_arm_clear(q, floor):
+            """Push a hanging arm back out to its rest clearance."""
+            limit, sign = floor
+            d = q @ mathutils.Vector((0.0, 1.0, 0.0))
+            if d.z > -0.3:                  # raised or thrown forward: leave it
+                return q
+            have = math.atan2(abs(d.x), -d.z)
+            if have >= limit or (d.x != 0.0 and (d.x > 0) != (sign > 0)):
+                return q
+            return mathutils.Quaternion(fwd, sign * (limit - have)) @ q
+
         track = {tname: [] for _sname, tname in pairs}
         for f in range(f0, f1 + 1):
             bpy.context.scene.frame_set(f)
@@ -1140,6 +1171,8 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             for tname in order:
                 sb = src.pose.bones[pair_map[tname]]
                 world[tname] = (src_to_arm @ sb.matrix).to_quaternion() @ corr[tname]
+            for tname, floor in abduction.items():
+                world[tname] = hold_arm_clear(world[tname], floor)
             for tname in order:
                 par = parent_of[tname]
                 # an unmatched parent (a cloak root, say) stays at its rest
