@@ -140,16 +140,34 @@ def crop_head(src: Path, dst: Path, index: int = 0,
     # foreground actually present in that band, so a tilted or off-axis head is
     # still centred rather than sliced by the figure's overall bounding box
     y_end = y0 + max(1, int((y1 - y0 + 1) * band))
-    xs = [x for y in range(y0, min(y_end + 1, sh)) for x in range(x0, min(x1 + 1, sw))
-          if mask[y][x]]
-    if not xs:
+    # Measure the head ROW BY ROW. Taking the foreground across the whole band
+    # at once measures the SHOULDERS, because the top fifth of a standing figure
+    # contains both -- which produced a crop 1.6x the shoulder width, padded to
+    # a square with white letterbox bars, and the head ended up filling about a
+    # fifth of the frame it was cropped to magnify. TRELLIS spends its voxels on
+    # whatever fills the frame, so most of the budget went on empty background.
+    rows = []
+    for y in range(y0, min(y_end + 1, sh)):
+        xs_row = [x for x in range(x0, min(x1 + 1, sw)) if mask[y][x]]
+        if xs_row:
+            rows.append((y, min(xs_row), max(xs_row)))
+    if not rows:
         return crop_main_subject(src, dst, index)
-    hx0, hx1 = min(xs), max(xs)
-    cx, half = (hx0 + hx1) / 2, (hx1 - hx0 + 1) * 0.8   # 1.6x the head's width
-    half = max(half, (y_end - y0 + 1) * 0.55)           # never narrower than tall
+    # the narrow rows are the head; the wide ones are the shoulders below it
+    widths = sorted(r[2] - r[1] + 1 for r in rows)
+    narrow = widths[max(0, len(widths) // 4)]
+    head_rows = [r for r in rows if (r[2] - r[1] + 1) <= narrow * 1.7] or rows
+    hx0 = min(r[1] for r in head_rows)
+    hx1 = max(r[2] for r in head_rows)
+    hy0 = min(r[0] for r in head_rows)
+    hy1 = max(r[0] for r in head_rows)
+    cx = (hx0 + hx1) / 2
+    cy = (hy0 + hy1) / 2
+    # a square around the head with a little air, so the face fills the frame
+    half = max(hx1 - hx0 + 1, hy1 - hy0 + 1) * 0.72
     f = max(w, h) / max(sw, sh)
     cx0, cx1 = max(0, int((cx - half) * f)), min(w, int((cx + half) * f))
-    cy0, cy1 = max(0, int((y0 - (y_end - y0) * 0.12) * f)), min(h, int(y_end * f))
+    cy0, cy1 = max(0, int((cy - half) * f)), min(h, int((cy + half) * f))
     if cx1 - cx0 < 8 or cy1 - cy0 < 8:
         return crop_main_subject(src, dst, index)
     crop = img.crop((cx0, cy0, cx1, cy1))
