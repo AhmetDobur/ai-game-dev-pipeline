@@ -99,7 +99,7 @@ func tick(delta: float) -> void:
 		return
 	_elapsed += delta
 
-	var f := FRAMES[_move]
+	var f: Dictionary = FRAMES[_move]
 	var frame := _elapsed * FPS
 	if not _did_hit and frame >= f.startup and frame <= f.startup + f.active:
 		_did_hit = true
@@ -139,7 +139,7 @@ func _begin(hand: String) -> void:
 
 
 func _total_seconds(move: String) -> float:
-	var f := FRAMES[move]
+	var f: Dictionary = FRAMES[move]
 	return (f.startup + f.active + f.recovery) / FPS
 
 

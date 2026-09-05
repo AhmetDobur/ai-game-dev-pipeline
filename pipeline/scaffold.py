@@ -30,6 +30,15 @@ PROJECT_GODOT = """config_version=5
 config/name="{title}"
 run/main_scene="res://scenes/world.tscn"
 
+[autoload]
+
+DemoDrive="*res://scripts/demo_drive.gd"
+
+[editor]
+
+movie_writer/fps=60
+movie_writer/disable_vsync=true
+
 [input]
 
 {input_map}
@@ -487,7 +496,7 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
     (game_dir / "export_presets.cfg").write_text(EXPORT_PRESETS, encoding="utf-8")
     # shipped with every project so the assemble step can photograph the world it
     # just built; harmless when unused, and it never steals an existing camera
-    for name in ("combat.gd", "cloak.gd"):
+    for name in ("combat.gd", "cloak.gd", "demo_drive.gd"):
         src = Path(__file__).resolve().parent.parent / "templates" / name
         if src.exists():
             shutil.copy2(src, game_dir / "scripts" / name)
