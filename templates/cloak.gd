@@ -124,6 +124,14 @@ func _limit_swing(anchor: Vector3) -> void:
 func _write_back() -> void:
 	# Turn solved world positions back into bone rotations: for each link, the
 	# rotation that takes its rest direction onto the direction the solver found.
+	#
+	# The solved direction is in skeleton space and a pose rotation is relative
+	# to the bone's PARENT, so it has to be converted before it is written. It
+	# used to be written raw, which meant every link in the chain re-applied its
+	# parent's rotation on top of its own; six links compounding turned the
+	# cloak into a cone that stood out around the character like a ballgown.
+	# Parents are solved before children here, so the parent's global pose is
+	# already the one this frame will use.
 	var inv := _skel.global_transform.affine_inverse()
 	for j in range(_bones.size() - 1):
 		var bone := _bones[j]
@@ -133,6 +141,9 @@ func _write_back() -> void:
 		var want := (local_b - local_a)
 		if want.length() < 0.0001:
 			continue
+		var parent := _skel.get_bone_parent(bone)
+		if parent >= 0:
+			want = _skel.get_bone_global_pose(parent).basis.inverse() * want
 		want = want.normalized()
 		var have := (rest.basis * Vector3.UP).normalized()
 		var axis := have.cross(want)
