@@ -24,12 +24,19 @@ class_name CloakPhysics
 # only the write moves into the modifier pass.
 
 @export var gravity := 9.0
-@export var stiffness := 0.55       # 0 loose rag, 1 rigid stick
-@export var damping := 0.86         # velocity kept per step; lower is heavier cloth
-@export var inertia := 1.15         # how hard the body's motion drags the cloth
-@export var max_swing_deg := 62.0   # keeps the cloak off the character's face
+@export var stiffness := 0.70       # 0 loose rag, 1 rigid stick
+@export var damping := 0.80         # velocity kept per step; lower is heavier cloth
+@export var inertia := 0.40         # how hard the body's motion drags the cloth
+@export var max_swing_deg := 24.0   # keeps the cloak off the character's face
 @export var wind := Vector3.ZERO
 @export var solver_iterations := 4  # constraint passes per step
+
+# Calibrated against the concept art, where the coat hangs almost straight and
+# its hem is no wider than the shoulders. The defaults were written for a light
+# cape and, once this modifier actually started reaching the skeleton, drove
+# the hem out to the full 62-degree limit on every step -- a heavy leather coat
+# read as a ballgown. These are exports so a lighter garment can be dialled
+# back up per character.
 
 var _skel: Skeleton3D = null
 var _bones: PackedInt32Array = []
