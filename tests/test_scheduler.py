@@ -108,3 +108,21 @@ def test_same_wave_dependents_run_without_reload(tmp_path):
     sched.run()
     assert len(loads) == 1, "dependent task in the same wave must not cost a reload"
     assert all(t["status"] == "done" for t in db.list_tasks(conn, run))
+
+
+def test_each_retry_sees_a_rising_attempt_count(tmp_path):
+    """The executor derives its sampler seed from `attempts`; if that stayed 0
+    every retry re-rendered the identical mesh for hours and failed identically."""
+    conn = db.connect(tmp_path / "t.db")
+    run = db.create_run(conn, "i.md")
+    db.add_task(conn, run, "design_2d", {"prompt": "p"})
+    seen = []
+
+    def failing(task, out_dir):
+        seen.append(task["attempts"])
+        return _png(out_dir, size=10)  # too small -> validation fails
+
+    sched = Scheduler(conn, run, executors={"design_2d": failing},
+                      workspace=tmp_path, wave_order=["sdxl"], max_attempts=3)
+    sched.run()
+    assert seen == [0, 1, 2]

@@ -140,6 +140,11 @@ class Scheduler:
                 # pass the previous failure so the executor can prompt a fix,
                 # and each dependency's outputs so data flows along edges
                 task_view = dict(task)
+                # the DB row was bumped above, but `task` is the copy read before
+                # the loop -- without this every retry re-derives seed_offset from
+                # attempts=0 and regenerates a bit-identical mesh, which is not a
+                # retry at all, it is the same three-hour render three times
+                task_view["attempts"] = attempt - 1
                 task_view["last_error"] = last_error
                 dep_rows = {dep: db.get_task(self.conn, dep)
                             for dep in task["depends_on"]}
