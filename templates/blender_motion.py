@@ -902,7 +902,7 @@ def clip_window(track, clip_name, n):
         def crouch(a, b):
             if not knees:
                 return 0.0
-            angs = [2.0 * math.acos(min(1.0, abs(q[0])))
+            angs = [2.0 * math.acos(min(1.0, abs(q.w)))
                     for k in knees for q in k[a:b]]
             return sum(angs) / max(1, len(angs))
 

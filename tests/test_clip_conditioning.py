@@ -186,6 +186,27 @@ def test_breathing_moves_the_chest_and_counter_rotates_the_neck(motion):
     assert track["Spine"][0].x == pytest.approx(0.0, abs=1e-9)
 
 
+def test_an_idle_window_prefers_standing_over_a_stiller_crouch(motion):
+    """The stillest stretch of a trial can be a rest in a deep crouch.
+
+    Retargeting that faithfully put the character in a sumo squat with his coat
+    draped over his knees, which is how this check came to exist. The knee's
+    local rotation is its bend, because the rig rests straight-legged.
+    """
+    n = 400
+    # first half: perfectly still, knees bent 60 degrees. second half: standing
+    # straight with a small sway. the crouch is stiller; the stand is the idle.
+    crouch, stand = _rot(math.radians(60.0)), _rot(0.0)
+    track = {
+        "LeftLeg": [crouch if i < 200 else _rot(0.02 * math.sin(i / 3.0))
+                    for i in range(n)],
+        "RightLeg": [crouch if i < 200 else _rot(0.02 * math.sin(i / 3.0))
+                     for i in range(n)],
+    }
+    a, _b = motion.clip_window(track, "idle", n)
+    assert a >= 190, "picked the crouch because it happened to be stiller"
+
+
 def test_an_idle_window_is_one_breath_from_the_calmest_stretch(motion):
     n = 400
     # busy for the first half, still for the second
