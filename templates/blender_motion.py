@@ -1177,6 +1177,69 @@ def retarget_onto(arm, bvh_path, clip_name=""):
             bpy.data.actions.remove(src_act)
 
 
+# A standing idle is the one clip that must NOT come from mocap.
+#
+# The mesh is generated from the concept sheet, and the rig is fitted to that
+# mesh, so the rest pose already IS the pose the art defines -- arms out at
+# 0.255 of body height with the elbows at 31 degrees, for this character.
+# Retargeting somebody else's "standing still" trial replaces that with the
+# performer's own habits: CMU 111_28 stands with his arms folded, which put
+# the hands on the body's centre line (0.016) and bent the elbows to 96
+# degrees. The character stopped looking like his own concept art.
+#
+# So build the idle from rest instead, and add only what a person standing
+# still actually does: breathe, shift their weight, and drift their head. The
+# periods are set from the clip length so every one of them closes on the loop,
+# and they are deliberately different lengths so the cycle never visibly
+# repeats as a single beat.
+_IDLE_SECONDS = 8.0
+
+
+def idle_from_rest(arm):
+    """Keyframe a breathing, weight-shifting stand on top of the rig's rest pose."""
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    n = max(2, int(_IDLE_SECONDS * FPS))
+    have = {pb.name: pb for pb in arm.pose.bones}
+
+    def key(name, f, x=0.0, y=0.0, z=0.0):
+        pb = have.get(name)
+        if pb is None:
+            return
+        pb.rotation_mode = "XYZ"
+        pb.rotation_euler = (x, y, z)
+        pb.keyframe_insert("rotation_euler", frame=f)
+        if f == 0:
+            # keyed per clip: a retargeted sibling sets QUATERNION and these
+            # euler keys would be ignored on replay
+            pb.keyframe_insert("rotation_mode", frame=f)
+
+    for f in range(n + 1):
+        u = f / n
+        breath = breath_phase(u * 2.0)                 # two breaths per loop
+        sway = math.sin(2 * math.pi * u)               # one weight shift per loop
+        drift = math.sin(2 * math.pi * u * 3.0)        # three slow head drifts
+        # the arms hang off the ribcage, so they answer the breath a beat late
+        lag = breath_phase(u * 2.0 - 0.12)
+
+        for name, w in _BREATH_BONES.items():
+            key(name, f, x=0.035 * w * breath)
+        # weight shift: the hips roll and the far knee softens to take it
+        key("Hips", f, y=0.020 * sway, z=0.012 * sway)
+        key("LeftLeg", f, x=-0.020 * max(0.0, sway))
+        key("RightLeg", f, x=-0.020 * max(0.0, -sway))
+        # arms drift out and back with the chest instead of hanging rigid
+        key("LeftArm", f, z=-0.030 * lag - 0.012 * sway)
+        key("RightArm", f, z=0.030 * lag - 0.012 * sway)
+        key("LeftForeArm", f, x=-0.022 * lag)
+        key("RightForeArm", f, x=-0.022 * lag)
+        key("Neck", f, y=0.018 * drift, z=0.010 * sway)
+
+    bpy.ops.object.mode_set(mode="OBJECT")
+    print(f"[motion] idle: built from the rig's rest pose "
+          f"({n} frames, {_IDLE_SECONDS:.0f}s loop)")
+
+
 def procedural_clip(arm, clip):
     """Keyframe a short looping base cycle by rule. Works for ANY rig — it just
     oscillates whatever body bones exist (arms/legs/spine/generic segments)."""
@@ -1328,9 +1391,15 @@ def main():
     for clip in ARGS.get("animations", ["idle"]):
         if arm.animation_data:
             arm.animation_data.action = None    # fresh action per clip
-        bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""), ARGS.get("kimodo_url", ""),
-                      out_dir)
-        if not (bvh and retarget_onto(arm, bvh, clip)):
+        if clip.lower().split("_")[0] == "idle":
+            idle_from_rest(arm)                 # the rest pose IS the concept art
+            PROVENANCE[clip] = "rest-pose idle"
+            bvh = None
+        else:
+            bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""),
+                          ARGS.get("kimodo_url", ""), out_dir)
+        if not (clip.lower().split("_")[0] == "idle"
+                or (bvh and retarget_onto(arm, bvh, clip))):
             procedural_clip(arm, clip)          # base body motion (never leaves it static)
             PROVENANCE[clip] = "procedural"     # retarget may have rejected the bvh too
         procedural_extras(arm, clip, extras)    # tail/jaw/wings on EVERY path
