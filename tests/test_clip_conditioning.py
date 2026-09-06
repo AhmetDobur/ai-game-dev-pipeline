@@ -217,3 +217,64 @@ def test_an_idle_window_is_one_breath_from_the_calmest_stretch(motion):
     a, b = motion.clip_window(track, "idle", n)
     assert b - a == pytest.approx(motion._BREATH_SECONDS * motion.FPS, abs=1)
     assert a >= 190, "picked the fidgety half of the trial"
+
+
+# --- authored movesets -----------------------------------------------------
+#
+# The tables are built at import time out of plain tuples, so the numbers a
+# character actually moves to are readable here without Blender. That is the
+# only check these constants get: nothing else in the suite runs the rig.
+
+
+def _targets(spec):
+    """Every limb target in a move, key by key: [{bone: (fwd, out, up)}, ...].
+
+    Targets are leg- or arm-lengths from that limb's own root, which is what
+    makes them comparable between a 2.80 m body and a 2.00 m one.
+    """
+    return [{b: ik[2] for b, ik in dirs.get("_ik", {}).items()}
+            for _t, dirs in spec["keys"]]
+
+
+def test_no_authored_limb_target_is_past_the_solver_reach_clamp(motion):
+    """solve_limb renormalises a target longer than its clamp instead of
+    refusing it, so a stride and a down-reach that add up past 0.98 come out as
+    a quietly shorter step than the table asked for -- the one failure in these
+    tables that leaves no trace in the build log."""
+    for name, moves in motion.MOVESETS.items():
+        for clip, spec in moves.items():
+            for i, key in enumerate(_targets(spec)):
+                for bone, t in key.items():
+                    reach = math.sqrt(sum(c * c for c in t))
+                    assert reach <= motion._REACH + 1e-9, \
+                        f"{name}/{clip} key {i}: {bone} reaches {reach:.3f}"
+
+
+def test_the_two_archetypes_do_not_walk_the_same_cycle(motion):
+    def excursion(moveset, clip):
+        fwd = [k["LeftUpLeg"][0] for k in _targets(motion.MOVESETS[moveset][clip])]
+        return max(fwd) - min(fwd)
+
+    grappler, striker = excursion("grappler", "walk"), excursion("striker", "walk")
+    assert grappler > 0.2 and striker > 0.2, "a shuffle, not a step"
+    assert abs(grappler - striker) > 0.05, "one gait retargeted onto both bodies"
+    assert (motion.MOVESETS["grappler"]["walk"]["seconds"]
+            != motion.MOVESETS["striker"]["walk"]["seconds"])
+    # the flat-foot override: without it the IK aims the toe down the shin
+    for _t, dirs in motion.MOVESETS["grappler"]["walk"]["keys"]:
+        assert "LeftFoot" in dirs and "RightFoot" in dirs
+
+
+def test_idle_is_an_authored_stance_that_closes_its_loop(motion):
+    for moveset in ("grappler", "striker"):
+        spec = motion.MOVESETS[moveset]["idle"]
+        keys = _targets(spec)
+        assert spec["keys"][0][0] == 0.0 and spec["keys"][-1][0] == 1.0
+        for bone, t in keys[0].items():
+            assert t == pytest.approx(keys[-1][bone], abs=1e-9), \
+                f"{moveset} idle does not meet itself at {bone}"
+        # a stance, not a stand: both fists are out in front of the body
+        arms = {b: t for b, t in keys[0].items() if b.endswith("Arm")}
+        assert len(arms) == 2 and all(t[0] > 0.25 for t in arms.values())
+    assert (motion.MOVESETS["grappler"]["idle"]["seconds"]
+            != motion.MOVESETS["striker"]["idle"]["seconds"])

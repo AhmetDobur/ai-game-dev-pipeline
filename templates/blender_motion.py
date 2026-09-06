@@ -437,8 +437,11 @@ def trim_sleeves(mesh_obj, arm, sleeve=1.0):
                      or mesh_obj.vertex_groups.new(name=name))
               for _, _, name in spans}
 
+    fixed = _extremities(mesh_obj, arm)
     moved = 0
     for v in mesh_obj.data.vertices:
+        if v.index in fixed:
+            continue                        # glove or boot: stays on its limb
         shed = 0.0
         for name, head, tail, radius in limbs:
             g = next((g for g in v.groups
@@ -468,6 +471,36 @@ def _seg_distance(p, head, tail):
     return (p - (head + d * t)).length
 
 
+_EXTREMITY = 0.10       # of body height: a glove or a boot, not a coat panel
+
+
+def _extremities(mesh_obj, arm, frac=_EXTREMITY):
+    """Vertices sitting on a hand or a foot, which no shedding pass may give away.
+
+    Both passes below choose a cloak segment by height alone, so a glove at
+    chest height lands on the mid-back segment and a boot on the hem -- which is
+    exactly the reported fault, a cloak carrying a copy of the arms and the
+    shoes. Neither pass is wrong about wanting to shed cloth; they are wrong
+    about what counts as cloth. A glove belongs to the fist wearing it and a
+    boot to the foot, however far the cuff sits from the bone's own axis, so
+    they are pinned here once and skipped by both.
+
+    The radius is a fraction of body height for the same reason the sleeve radii
+    are: it has to mean the same thing on a 2.80 m man and a 2.00 m woman.
+    """
+    to_local = mesh_obj.matrix_world.inverted() @ arm.matrix_world
+    zs = [v.co.z for v in mesh_obj.data.vertices]
+    radius = frac * ((max(zs) - min(zs)) if zs else 0.0)
+    segs = [(to_local @ b.head_local, to_local @ b.tail_local)
+            for b in (arm.data.bones.get(n) for n in
+                      ("LeftHand", "RightHand", "LeftFoot", "RightFoot"))
+            if b is not None]
+    if radius <= 0.0 or not segs:
+        return frozenset()          # not a humanoid: nothing to protect
+    return frozenset(v.index for v in mesh_obj.data.vertices
+                     if any(_seg_distance(v.co, h, t) <= radius for h, t in segs))
+
+
 def paint_cloak(mesh_obj, arm, reach=0.55, strength=0.9):
     """Hand the back-hanging geometry to the cloak chain.
 
@@ -494,8 +527,11 @@ def paint_cloak(mesh_obj, arm, reach=0.55, strength=0.9):
     if y_back - y_mid < 1e-6:
         return
 
+    fixed = _extremities(mesh_obj, arm)
     painted = 0
     for v in mesh_obj.data.vertices:
+        if v.index in fixed:
+            continue                       # glove or boot: stays on its limb
         if v.co.z > top:
             continue                       # above the collar: shoulders, not cape
         # how far toward the back surface this vertex sits, 0 at the spine
@@ -1568,14 +1604,20 @@ def _stand():
     return _merge(_foot(-1, 0.02, 0.12, -0.97), _foot(1, 0.02, 0.12, -0.97))
 
 
-def _guard():
+def _guard(fwd=0.0, out=0.0, up=0.0, skew=0.0):
     """A grappler's guard: hands open, low, in front of the belly, elbows out.
 
     A boxer hides behind his gloves. This man is waiting to grab you, so the
     hands sit where they can close on something rather than where they protect
     the head -- and low enough that a punch from here has somewhere to travel.
+
+    The offsets exist so a held pose can be nudged without being rewritten: a
+    breath pushes the whole guard out a little, a stride swings one arm forward
+    and the other back (`skew`). Called bare it is the neutral every strike in
+    the table below opens and closes on, unchanged.
     """
-    return _fists(0.34, 0.30, -0.36)
+    return _merge(_fist(-1, 0.34 + fwd - skew, 0.30 + out, -0.36 + up),
+                  _fist(1, 0.34 + fwd + skew, 0.30 + out, -0.36 + up))
 
 
 def solve_limb(arm, side, chain, target, pole, rest_w):
@@ -1688,7 +1730,94 @@ def _merge(*ds):
     return out
 
 
+def _idle(neutral, seconds, breaths, sway, steps=16):
+    """A breathing hold of this archetype's own guard, written as a normal move.
+
+    The idle used to be assembled from the rig's rest pose, which is why both
+    fighters idled identically with their hands hanging below their hips: the
+    rest pose is a T-pose relaxed into a stand, and a stand is not a stance. A
+    fighting-game idle is the guard the strikes open and close on, so it belongs
+    in this table beside them rather than in a special case ahead of them, and
+    then it differs per archetype for free -- the grappler's open low hands and
+    the striker's high tight ones are already written above.
+
+    `breaths` has to be a whole number or the first and last key disagree and
+    the loop pops on every repeat.
+    """
+    keys = []
+    for i in range(steps + 1):
+        u = i / steps
+        breath = breath_phase(u * breaths)
+        shift = math.sin(2 * math.pi * u)            # one weight shift per loop
+        drift = math.sin(2 * math.pi * u * 3.0)      # the gaze wanders slower
+        keys.append((u, _merge(
+            # the guard rises and reaches on the inhale, and settles a little on
+            # whichever foot is carrying the weight this half of the loop
+            neutral(fwd=0.03 * breath, up=0.02 * breath - 0.015 * abs(shift)),
+            _lean(pitch=-0.06 * breath, twist=0.18 * sway * shift),
+            {"Neck": _bend(0.05 * drift, 0.03 * shift)})))
+    return dict(seconds=seconds, keys=keys)
+
+
+_REACH = 0.98           # solve_limb's own clamp on a limb target
+_TRACK = 0.12           # feet under the hips, the width _stand() already uses
+
+
+def _plant(fwd, out=_TRACK):
+    """How far down a foot reaches at this stride, in leg-lengths.
+
+    Derived rather than tabulated because solve_limb silently renormalises a
+    target longer than its clamp: a stride and a down-reach picked independently
+    can add up past it, and the failure is a stride quietly shorter than the one
+    the table asked for rather than an error. Taking the largest down component
+    the clamp allows also puts the foot as near the floor as a rotation-only rig
+    can put it, which is the difference between a walk and a hover.
+    """
+    return -math.sqrt(max(0.0, _REACH ** 2 - fwd * fwd - out * out))
+
+
+def _gait(seconds, stride, lift, neutral, swing, lean=0.0):
+    """One locomotion cycle: contact, pass, mirrored contact, pass, close.
+
+    The walk was one CMU trial retargeted onto whoever asked for it. A rotation
+    -only retarget is scale-invariant by construction, so an average adult's
+    stride came out as the same fraction of the leg on a 2.80 m man as on a
+    2.00 m woman -- the two characters walked identically, and neither walked
+    like itself. Here the stride is stated in leg-lengths from the character's
+    own hip, so it is a property of the body walking, and each archetype gets
+    its own constants: the grappler covers less ground more slowly than the
+    striker, which is the same difference the strikes already make.
+    """
+    flat = _bend(0.0, 0.0)      # the IK aims a foot down its own shin; a walking
+                                # foot is flat, and rest attitude is what flat is
+    down = _plant(stride)
+    pass_through = _plant(0.0)
+
+    def pose(l_fwd, l_up, r_fwd, r_up, arm_skew):
+        return _merge(
+            neutral(skew=arm_skew * swing), _lean(pitch=lean),
+            _foot(-1, l_fwd, _TRACK, l_up), _foot(1, r_fwd, _TRACK, r_up),
+            {"LeftFoot": flat, "RightFoot": flat})
+
+    # the arm opposite the leading leg swings forward, which is the one cue that
+    # separates a walk from a shuffle even when the feet are right
+    return dict(seconds=seconds, keys=[
+        (0.00, pose(+stride, down, -stride, down, +1.0)),
+        (0.25, pose(0.0, pass_through, 0.0, -lift, 0.0)),
+        (0.50, pose(-stride, down, +stride, down, -1.0)),
+        (0.75, pose(0.0, -lift, 0.0, pass_through, 0.0)),
+        (1.00, pose(+stride, down, -stride, down, +1.0)),
+    ])
+
+
 GRAPPLER = {
+    # A big man's walk: short steps for the leg length, slow, and the feet stay
+    # low. Stride and lift are the calibration knob for both cycles -- they are
+    # bounded by solve_limb's reach clamp (see _plant), not by taste.
+    "idle": _idle(_guard, 6.5, breaths=2, sway=1.0),
+    "walk": _gait(1.15, stride=0.24, lift=0.88, neutral=_guard, swing=0.06),
+    "run": _gait(0.85, stride=0.34, lift=0.70, neutral=_guard, swing=0.14,
+                 lean=0.35),
     # The light button. A grappler's fast punch is still a shovel, but it has
     # next to no windup -- the fist starts low and goes, and the weight is in
     # the step behind it rather than in a backswing.
@@ -1752,13 +1881,20 @@ GRAPPLER = {
     ]),
 }
 
-def _tight():
+def _tight(fwd=0.0, out=0.0, up=0.0, skew=0.0):
     """A striker's guard: hands high and tight, elbows in, bladed to the front.
 
     The opposite of the grappler's open hands. She is not waiting to catch
     anything -- she is covering her own head so she can throw from behind it.
+
+    Offsets as in _guard(). The feet come last so a move that states its own
+    foot targets -- a gait -- overrides the neutral stance rather than fighting
+    it, since _merge lets the later entry win.
     """
-    return _merge(_fists(0.30, 0.15, 0.24, elbow=(0.0, -0.15, -1.0)), _stand())
+    elbow = (0.0, -0.15, -1.0)
+    return _merge(_fist(-1, 0.30 + fwd - skew, 0.15 + out, 0.24 + up, elbow),
+                  _fist(1, 0.30 + fwd + skew, 0.15 + out, 0.24 + up, elbow),
+                  _stand())
 
 
 # Veiled Shadow is built to the striker archetype, drawn from the same source
@@ -1767,6 +1903,13 @@ def _tight():
 # heavy buttons are all kicks, the startup is short, and nothing commits the
 # whole body the way a lariat does.
 STRIKER = {
+    # She is lighter and quicker on the same machinery: a longer step for her
+    # leg, a faster cycle, and a shorter breath. Nothing here is scaled from the
+    # grappler's numbers -- they are two gaits, not one gait and a multiplier.
+    "idle": _idle(_tight, 4.0, breaths=3, sway=0.55),
+    "walk": _gait(0.85, stride=0.30, lift=0.86, neutral=_tight, swing=0.05),
+    "run": _gait(0.65, stride=0.42, lift=0.62, neutral=_tight, swing=0.12,
+                 lean=0.30),
     # Straight jab off the front hand. Almost no travel and back instantly;
     # this is the button she uses to make room, not to hurt anyone.
     "jab": dict(seconds=0.28, keys=[
@@ -1850,6 +1993,12 @@ def authored_clip(arm, clip, moveset):
     for t, dirs in spec["keys"]:
         frames.append(int(round(t * n)))
         want = {}
+        # IK first, so a bone the pose also names by hand wins over the chain
+        # that happens to end on it. The solver aims the last bone of a chain
+        # down the segment above it, which is right for a fist and wrong for a
+        # foot: it points the toe at the floor on every planted frame.
+        for side, chain, target, pole in dirs.get("_ik", {}).values():
+            want.update(solve_limb(arm, side, chain, target, pole, rest_w))
         for b, d in dirs.items():
             if b == "_ik" or b not in arm.pose.bones:
                 continue
@@ -1857,8 +2006,6 @@ def authored_clip(arm, clip, moveset):
             if callable(d):     # a tilt relative to this rig's own rest pose
                 d = d(rq @ mathutils.Vector((0.0, 1.0, 0.0)))
             want[b] = aim_world(rq, d)
-        for side, chain, target, pole in dirs.get("_ik", {}).values():
-            want.update(solve_limb(arm, side, chain, target, pole, rest_w))
         local = solve_local(arm, want)
         for pb in arm.pose.bones:
             if any(k in pb.name.lower()
@@ -1880,6 +2027,17 @@ def authored_clip(arm, clip, moveset):
             pb.rotation_quaternion = q
             pb.keyframe_insert("rotation_quaternion", frame=f)
         pb.keyframe_insert("rotation_mode", frame=0)
+
+    # A cycle has no accents: bezier eases the body to a standstill at every key
+    # it passes, so a five-key stride reads as five poses being struck in turn
+    # rather than one continuous walk. A strike is the opposite -- the ease IS
+    # the wind-up and the snap -- so only the looping clips are flattened.
+    act = arm.animation_data.action if arm.animation_data else None
+    if act and is_cyclic(clip):
+        for fc in act.fcurves:
+            for kp in fc.keyframe_points:
+                kp.interpolation = "LINEAR"
+
     bpy.ops.object.mode_set(mode="OBJECT")
     print(f"[motion] {clip}: authored {moveset} move "
           f"({n} frames, {spec['seconds']:.2f}s)")
@@ -2050,11 +2208,14 @@ def main():
         if arm.animation_data:
             arm.animation_data.action = None    # fresh action per clip
         moveset = ARGS.get("moveset", "")
-        if clip.lower().split("_")[0] == "idle":
-            idle_from_rest(arm)                 # the rest pose IS the concept art
-            PROVENANCE[clip] = "rest-pose idle"
-        elif authored_clip(arm, clip, moveset):
+        # the moveset is consulted first for every clip including idle: idle used
+        # to be intercepted here, which made the authored guard poses unreachable
+        # for the one clip the player looks at longest
+        if authored_clip(arm, clip, moveset):
             PROVENANCE[clip] = f"authored:{moveset}"
+        elif clip.lower().split("_")[0] == "idle":
+            idle_from_rest(arm)                 # no moveset: rest IS the concept art
+            PROVENANCE[clip] = "rest-pose idle"
         else:
             bvh = bvh_for(clip, body_plan, ARGS.get("cmu_dir", ""),
                           ARGS.get("kimodo_url", ""), out_dir)
