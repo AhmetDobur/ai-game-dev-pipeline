@@ -32,6 +32,10 @@ const TAP_SECONDS := 0.05
 # the far end of a colonnade. The demo therefore brings its own camera and key
 # light instead of restyling the game: both exist only while PIPELINE_DEMO is
 # set, so what ships is exactly what a player gets.
+# Framing distances, authored against a 1.8m figure and then scaled by whoever
+# actually turns up. A 2.80m grappler shot with the 1.8m numbers is filmed from
+# knee height at conversational distance -- he leaves the top of frame entirely.
+const REF_HEIGHT := 1.8
 const CAM_DIST := 3.6
 const CAM_HEIGHT := 1.5
 const AIM_HEIGHT := 0.85
@@ -45,6 +49,7 @@ var _fill: OmniLight3D = null
 var _rim: OmniLight3D = null
 var _body: Node3D = null
 var _angle := 0.0
+var _k := 1.0                   # body height / REF_HEIGHT, measured in _rig_camera
 
 
 # PIPELINE_DEMO=light  -> lights only; you keep the controls and the game camera
@@ -70,6 +75,7 @@ func _rig_camera() -> void:
 	if _body == null:
 		push_warning("[demo] no player body found; leaving the game camera alone")
 		return
+	_k = _measure_height() / REF_HEIGHT
 	var root := get_tree().current_scene
 	if _drive:
 		_cam = Camera3D.new()
@@ -81,7 +87,7 @@ func _rig_camera() -> void:
 	# the shadow side and the rim separates the cloak from a black hall.
 	_key = SpotLight3D.new()
 	_key.light_energy = 5.0
-	_key.spot_range = 16.0
+	_key.spot_range = 16.0 * _k
 	_key.spot_angle = 50.0
 	_key.light_color = Color(1.0, 0.94, 0.86)
 	_key.shadow_enabled = true
@@ -89,13 +95,13 @@ func _rig_camera() -> void:
 
 	_fill = OmniLight3D.new()
 	_fill.light_energy = 2.2
-	_fill.omni_range = 9.0
+	_fill.omni_range = 9.0 * _k
 	_fill.light_color = Color(0.72, 0.80, 1.0)
 	root.add_child(_fill)
 
 	_rim = OmniLight3D.new()
 	_rim.light_energy = 3.0
-	_rim.omni_range = 9.0
+	_rim.omni_range = 9.0 * _k
 	_rim.light_color = Color(1.0, 0.86, 0.70)
 	root.add_child(_rim)
 
@@ -106,6 +112,24 @@ func _rig_camera() -> void:
 		env.environment.ambient_light_color = Color(0.62, 0.60, 0.66)
 		env.environment.ambient_light_energy = 0.55
 	_place_camera()
+
+
+## How tall this character actually is, from its own skinned mesh.
+##
+## Read rather than passed in: the recorder does not know which fighter it was
+## pointed at, and a number carried alongside the scene is a number that goes
+## stale the first time somebody swaps the .glb.
+func _measure_height() -> float:
+	if _body == null:
+		return REF_HEIGHT
+	var tallest := 0.0
+	for node in _body.find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		if mi.skin == null and mi.skeleton.is_empty():
+			continue
+		tallest = maxf(tallest,
+				mi.get_aabb().size.y * mi.global_transform.basis.get_scale().y)
+	return tallest if tallest > 0.5 else REF_HEIGHT
 
 
 func _find_env(n: Node) -> WorldEnvironment:
@@ -142,20 +166,20 @@ func _place_camera() -> void:
 	_angle = lerp(_angle, want, 0.03)
 	var base := _body.global_position
 	var yaw := _body.global_rotation.y + _angle
-	var offset := Vector3(sin(yaw), 0.0, cos(yaw)) * CAM_DIST
-	var eye := base + offset + Vector3(0.0, CAM_HEIGHT, 0.0)
+	var offset := Vector3(sin(yaw), 0.0, cos(yaw)) * CAM_DIST * _k
+	var eye := base + offset + Vector3(0.0, CAM_HEIGHT * _k, 0.0)
 	if _cam != null:
 		_cam.global_position = eye
-		_cam.look_at(base + Vector3(0.0, AIM_HEIGHT, 0.0), Vector3.UP)
-	var aim := base + Vector3(0.0, AIM_HEIGHT, 0.0)
-	_key.global_position = eye + Vector3(0.0, 1.2, 0.0)
+		_cam.look_at(base + Vector3(0.0, AIM_HEIGHT * _k, 0.0), Vector3.UP)
+	var aim := base + Vector3(0.0, AIM_HEIGHT * _k, 0.0)
+	_key.global_position = eye + Vector3(0.0, 1.2 * _k, 0.0)
 	_key.look_at(aim, Vector3.UP)
 	# fill opposite the key, rim behind: both ride the same orbit so the shaping
 	# holds as the camera swings round for the striking section
-	var side := Vector3(sin(yaw + 2.0), 0.0, cos(yaw + 2.0)) * 2.6
-	_fill.global_position = base + side + Vector3(0.0, 1.5, 0.0)
-	var behind := Vector3(sin(yaw + PI), 0.0, cos(yaw + PI)) * 2.4
-	_rim.global_position = base + behind + Vector3(0.0, 2.1, 0.0)
+	var side := Vector3(sin(yaw + 2.0), 0.0, cos(yaw + 2.0)) * 2.6 * _k
+	_fill.global_position = base + side + Vector3(0.0, 1.5 * _k, 0.0)
+	var behind := Vector3(sin(yaw + PI), 0.0, cos(yaw + PI)) * 2.4 * _k
+	_rim.global_position = base + behind + Vector3(0.0, 2.1 * _k, 0.0)
 
 
 func _process(delta: float) -> void:
