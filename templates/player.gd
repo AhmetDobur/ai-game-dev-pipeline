@@ -26,7 +26,13 @@ const RUN_STICK := 0.75        # push the stick past this and the character runs
 const GRAVITY := 18.0
 const PITCH_LIMIT := 1.2
 const MOUSE_SENS := 0.0022
-const REACH := 1.4              # how far a landed blow carries, in metres
+# How far a landed blow carries, as a fraction of the character's own height:
+# roughly shoulder to fist plus half a body's depth. Measured from the mesh
+# rather than fixed, because the sheet puts 0.8 m between these two fighters and
+# a constant would either give the 2.00 m assassin the 2.80 m brawler's reach or
+# leave the brawler unable to touch anyone he can see.
+const REACH_PER_HEIGHT := 0.62
+const FALLBACK_HEIGHT := 1.8
 const VOICE_TAKES := 3          # takes per grunt, matching make_voice.py
 
 @onready var _pivot: Node3D = $CamPivot
@@ -41,6 +47,7 @@ var _pad_left := false      # edge detection for pad buttons, which have no
 var _pad_right := false     # just_pressed equivalent per device
 var _clip := ""
 var _keyboard := true
+var _reach := FALLBACK_HEIGHT * REACH_PER_HEIGHT
 var _voice: AudioStreamPlayer = null
 var _takes := {}                # "effort"/"hurt" -> paths that actually exist
 
@@ -66,6 +73,7 @@ func _ready() -> void:
 	add_child(_combat)
 	_combat.setup(_anim)
 	_load_voice()
+	_measure_reach()
 	# swinging is the grunt, landing is the other guy's problem
 	_combat.strike_started.connect(func(_m, _c): _speak("effort"))
 	var skel := find_child("Skeleton3D", true, false) as Skeleton3D
@@ -79,6 +87,16 @@ func _ready() -> void:
 		_combat.strike_landed.connect(func(_m, _d):
 			_cloak.impulse(-global_transform.basis.z, 0.06))
 	_combat.strike_landed.connect(_on_landed)
+
+
+func _measure_reach() -> void:
+	var tallest := 0.0
+	for node in find_children("*", "VisualInstance3D", true, false):
+		var box: AABB = (node as VisualInstance3D).get_aabb()
+		tallest = maxf(tallest, box.size.y * node.global_transform.basis.get_scale().y)
+	if tallest < 0.5:
+		tallest = FALLBACK_HEIGHT      # no mesh yet, or an unreadable one
+	_reach = tallest * REACH_PER_HEIGHT
 
 
 func _load_voice() -> void:
@@ -127,7 +145,7 @@ func _opponent_in_front() -> Node3D:
 		if other == self or not (other is CharacterBody3D):
 			continue
 		var to: Vector3 = other.global_position - global_position
-		if to.length() <= REACH \
+		if to.length() <= _reach \
 				and to.normalized().dot(-global_transform.basis.z) > 0.3:
 			return other
 	return null
