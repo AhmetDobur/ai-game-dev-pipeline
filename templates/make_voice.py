@@ -32,30 +32,41 @@ CODE_SPAN = 4096
 STOP = 128258
 SAMPLE_RATE = 24000
 
-# The pious grappler's lines. Written to be devout rather than to quote: a fight
-# taunt built out of scripture is the thing to avoid, so these are a believer's
-# own words about where he thinks his strength comes from.
+# Both fighters are devout -- that is on the concept sheet, which calls her "a
+# shadow in reverence" and him an imam whose "fists are sermons". So the
+# register is not one character's quirk to be balanced against a secular
+# opposite; it is the game's, and the argument between them is mercy against
+# judgment rather than belief against unbelief.
 #
-# The striker next to him is not religious -- that register belongs to one
-# character, not to the game -- so hers are about not being seen.
+# Two rules hold across both. Nothing is a joke at the faith's expense -- that
+# is the Venator problem and it is the reason these lines exist at all. And
+# nothing quotes scripture: holy text used as trash talk is the same move
+# dressed up as respect. They speak about themselves.
+#
+# One more for her: the violence is hers and is never delegated upward. She
+# claims judgment as her own choice, because writing her as carrying out an
+# instruction from God turns a character into an accusation.
 CHARACTERS = {
     "pious_force": {
         "voice": "leo",
         "lines": {
-            "intro_praise":  "I only praise Him.",
-            "intro_name":    "I raise no hand but in His name.",
-            "intro_lent":    "Strength is lent. Never owned.",
-            "victory_glory": "It was never mine to keep.",
-            "victory_mercy": "Mercy first. Then force.",
+            "intro_praise":   "I only praise Him.",
+            "intro_name":     "I raise no hand but in His name.",
+            "intro_lent":     "Strength is lent. Never owned.",
+            # the sheet's own copy, in his mouth
+            "intro_deliver":  "I do not seek forgiveness. I deliver it.",
+            "victory_glory":  "It was never mine to keep.",
+            "victory_mercy":  "Mercy first. Then force.",
         },
     },
     "veiled_shadow": {
         "voice": "tara",
         "lines": {
-            "intro_unseen":  "You will not see the one that lands.",
-            "intro_watch":   "Watch closely. It will not help.",
-            "victory_never": "You were never fighting me.",
-            "victory_kept":  "Nothing to see. As promised.",
+            "intro_quiet":    "Judgment is not loud.",
+            "intro_veil":     "The veil is not to hide. It is to remember.",
+            "intro_silence":  "Mercy is his. Silence is mine.",
+            "victory_heard":  "No one heard. Let that be the mercy.",
+            "victory_still":  "Be still now.",
         },
     },
 }
