@@ -298,18 +298,33 @@ def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
     # A dropped take leaves the previous run's file behind, and the game would
     # happily play an 8-second victory line that this run rejected.
     dest.mkdir(parents=True, exist_ok=True)
-    for stale in dest.glob("voice_*.wav"):
-        stale.unlink()
     grunts = {f"{kind}_{i}": text
               for kind, text in GRUNTS.items()
               for i in range(1, GRUNT_TAKES + 1)}
-    written = {}
+
+    # Anything not on the current list is from an older one -- a line that was
+    # rewritten, or a take this run rejected -- and the game would happily play
+    # it. Everything still on the list is kept: a scaffold runs on every build
+    # and a full set is a quarter of an hour of a model that has already said
+    # these words. Delete the folder to force a re-record.
+    wanted = {f"voice_{n}.wav" for n in list(spec["lines"]) + list(grunts)}
+    for f in dest.glob("voice_*.wav"):
+        if f.name not in wanted:
+            f.unlink()
+    have = {f.stem[len("voice_"):]: f for f in dest.glob("voice_*.wav")}
+    if have:
+        print(f"[voice] {name}: keeping {len(have)} take(s) already recorded",
+              flush=True)
+    written = dict(have)
     passes = ((dict(spec["lines"]), _line_bounds, None),
               ({k: v for k, v in grunts.items() if k.startswith("effort")},
                _grunt_bounds, _effort_shape),
               ({k: v for k, v in grunts.items() if k.startswith("hurt")},
                _grunt_bounds, None))
     for pending, bounds, shape in passes:
+        for got in list(pending):
+            if got in have:
+                pending.pop(got)
         for _ in range(tries):
             if not pending:
                 break

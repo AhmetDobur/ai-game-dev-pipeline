@@ -81,3 +81,24 @@ def test_the_effort_grunt_is_a_third_of_a_groan():
     assert abs(out[0] - _tone(1.3)[0]) < 1e-9       # attack kept intact
     short = _tone(0.2)
     assert len(_effort_shape(short)) == len(short)  # nothing to cut
+
+
+def test_takes_already_recorded_are_kept_and_old_ones_are_not(tmp_path, monkeypatch):
+    """A scaffold runs on every build; a full set is a quarter of an hour of a
+    model that has already said these words. But a line that was rewritten
+    leaves its old take behind, and the game would play it."""
+    from templates import make_voice
+
+    dest = tmp_path / "pious_force"
+    dest.mkdir(parents=True)
+    (dest / "voice_intro_praise.wav").write_bytes(b"riff")   # on the list
+    (dest / "voice_gone.wav").write_bytes(b"riff")           # not any more
+
+    asked = []
+    monkeypatch.setattr(make_voice, "generate",
+                        lambda *a, **k: (asked.extend(k.get("lines") or a[3]), {})[1])
+    make_voice.generate_character(tmp_path, "pious_force", tries=1)
+
+    assert (dest / "voice_intro_praise.wav").exists()
+    assert not (dest / "voice_gone.wav").exists()
+    assert "intro_praise" not in asked and "intro_lent" in asked
