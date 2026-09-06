@@ -78,10 +78,19 @@ func _rig_camera() -> void:
 	_k = _measure_height() / REF_HEIGHT
 	var root := get_tree().current_scene
 	if _drive:
-		_cam = Camera3D.new()
-		_cam.fov = 55.0
-		root.add_child(_cam)
-		_cam.current = true
+		# In split-screen each half's camera lives inside its own SubViewport and
+		# player.gd writes its transform every frame from that player's CamMount.
+		# A camera added to the scene root is therefore never rendered and, even
+		# if it were, would be overwritten immediately -- which is exactly what
+		# the first recording showed: two tiny figures at the far end of a hall.
+		# So reframe the rig the game already has instead of fighting it.
+		if _tighten_existing_rigs():
+			_cam = null
+		else:
+			_cam = Camera3D.new()
+			_cam.fov = 55.0
+			root.add_child(_cam)
+			_cam.current = true
 	# Key/fill/rim rather than one hot spot. A single lamp on a dark robe either
 	# leaves it a silhouette or blows the specular out to white; the fill opens
 	# the shadow side and the rim separates the cloak from a black hall.
@@ -114,6 +123,39 @@ func _rig_camera() -> void:
 	_place_camera()
 
 
+## Pull every player's own camera in to a showcase distance. True if there was
+## one to pull, meaning this scene drives its cameras and the demo must not add
+## another.
+##
+## The gameplay spring arm sits about 1.9 body-heights back, which is the right
+## distance to fight from and much too far to look at a character from. These
+## are fractions of each body's own height so the two fighters, who are not the
+## same size, are framed the same way.
+func _tighten_existing_rigs() -> bool:
+	var found := false
+	for node in get_tree().current_scene.find_children("*", "CharacterBody3D", true, false):
+		var pivot := node.get_node_or_null("CamPivot") as Node3D
+		var spring := node.get_node_or_null("CamPivot/SpringArm3D") as SpringArm3D
+		if pivot == null or spring == null:
+			continue
+		var h := _height_of(node)
+		pivot.position.y = h * 0.62
+		spring.spring_length = h * 1.15
+		found = true
+	return found
+
+
+func _height_of(body: Node3D) -> float:
+	var tallest := 0.0
+	for node in body.find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		if mi.skin == null and mi.skeleton.is_empty():
+			continue
+		tallest = maxf(tallest,
+				mi.get_aabb().size.y * mi.global_transform.basis.get_scale().y)
+	return tallest if tallest > 0.5 else REF_HEIGHT
+
+
 ## How tall this character actually is, from its own skinned mesh.
 ##
 ## Read rather than passed in: the recorder does not know which fighter it was
@@ -122,14 +164,7 @@ func _rig_camera() -> void:
 func _measure_height() -> float:
 	if _body == null:
 		return REF_HEIGHT
-	var tallest := 0.0
-	for node in _body.find_children("*", "MeshInstance3D", true, false):
-		var mi := node as MeshInstance3D
-		if mi.skin == null and mi.skeleton.is_empty():
-			continue
-		tallest = maxf(tallest,
-				mi.get_aabb().size.y * mi.global_transform.basis.get_scale().y)
-	return tallest if tallest > 0.5 else REF_HEIGHT
+	return _height_of(_body)
 
 
 func _find_env(n: Node) -> WorldEnvironment:
