@@ -69,3 +69,39 @@ def test_each_fighter_gets_its_own_voice_folder(tmp_path):
     p2 = world.split('[node name="Player2"')[1].split("[node")[0]
     assert 'voice_dir = "res://audio/voice/veiled_shadow"' in p1
     assert 'voice_dir = "res://audio/voice/pious_force"' in p2
+
+
+def test_two_fighters_get_their_own_capsules_and_camera_heights():
+    """A 2.80m grappler and a 2.00m striker cannot share one 1.8m collider.
+
+    Before this the scene emitted a single CapsuleShape3D at 1.8 and every seat
+    referenced it, so the taller fighter's head passed through walls and his
+    camera framed his navel. Everything sized in metres now scales off the
+    character's own measured height.
+    """
+    from pipeline.scaffold import _players, _player_shapes
+
+    glbs = ["res://assets/a/character.glb", "res://assets/b/character.glb"]
+    heights = [2.8, 2.0]
+    shapes = _player_shapes(glbs, heights)
+    assert 'id="player_shape0"' in shapes and "height = 2.8" in shapes
+    assert 'id="player_shape1"' in shapes and "height = 2.0" in shapes
+
+    scene = _players(glbs, None, lambda kind, path: "9", None, heights)
+    # each seat points at its OWN shape, not a shared one
+    assert 'SubResource("player_shape0")' in scene
+    assert 'SubResource("player_shape1")' in scene
+    # camera pivot rides at the same fraction of each body, not a fixed 1.6
+    assert "Vector3(0, 2.489, 0)" in scene      # 1.6 * 2.8/1.8
+    assert "Vector3(0, 1.778, 0)" in scene      # 1.6 * 2.0/1.8
+
+
+def test_single_fighter_scene_is_unchanged_at_reference_height():
+    """The 1.8m case must emit exactly what it always did."""
+    from pipeline.scaffold import _players
+
+    scene = _players(["res://assets/a/character.glb"], None,
+                     lambda kind, path: "9", None, [1.8])
+    assert "Vector3(0, 1.6, 0)" in scene
+    assert "spring_length = 3.5" in scene
+    assert "Vector3(0, 0.9, 0)" in scene

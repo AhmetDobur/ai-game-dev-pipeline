@@ -206,7 +206,8 @@ def build_executors(cfg: dict, workspace: Path,
         # extras (tail/jaw/wings) always get procedural secondary motion on top.
         return motion.build(mesh_path, spec.get("body_plan", "humanoid"),
                             spec.get("animations", ["idle"]), spec.get("extras", []),
-                            out_dir)
+                            out_dir, spec.get("height", 1.8),
+                            spec.get("moveset", ""))
 
     def audio(task: dict, out_dir: Path) -> list[Path]:
         out = out_dir / "line.wav"

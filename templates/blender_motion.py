@@ -38,7 +38,7 @@ def reset_scene():
     bpy.context.scene.render.fps = FPS
 
 
-def import_mesh(path):
+def import_mesh(path, target_h=1.8):
     ext = os.path.splitext(path)[1].lower()
     if ext in (".glb", ".gltf"):
         bpy.ops.import_scene.gltf(filepath=path)
@@ -59,12 +59,15 @@ def import_mesh(path):
     if len(meshes) > 1:
         bpy.ops.object.join()
     obj = bpy.context.view_layer.objects.active
-    # normalize: feet on the ground at origin, character-sized (the game scene
-    # assumes ~1.8m; a raw TRELLIS mesh arrives at arbitrary scale/offset)
+    # normalize: feet on the ground at origin, at this character's own height
+    # (a raw TRELLIS mesh arrives at arbitrary scale/offset). Height is per
+    # character, not a shared constant -- the concept sheet gives the grappler
+    # 2.80m and the striker 2.00m, and forcing both to one number is what made
+    # a heavy man read as an ordinary one standing next to an assassin.
     bb = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
     height = max(v.z for v in bb) - min(v.z for v in bb)
     if height > 0:
-        s = 1.8 / height
+        s = target_h / height
         obj.scale = (obj.scale[0] * s, obj.scale[1] * s, obj.scale[2] * s)
         bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     bb = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
@@ -2028,12 +2031,12 @@ def main():
         arm = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
         if arm is None or mesh is None:
             reset_scene()
-            mesh = import_mesh(ARGS["mesh"])
+            mesh = import_mesh(ARGS["mesh"], ARGS.get("height", 1.8))
             arm = procedural_rig(mesh, body_plan, extras)
         else:
             print(f"[motion] using pre-rigged mesh ({len(arm.data.bones)} bones)")
     else:
-        mesh = import_mesh(ARGS["mesh"])
+        mesh = import_mesh(ARGS["mesh"], ARGS.get("height", 1.8))
         arm = procedural_rig(mesh, body_plan, extras)
 
     if ARGS.get("rig_only"):

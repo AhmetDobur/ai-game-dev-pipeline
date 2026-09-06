@@ -34,6 +34,14 @@ def report(path):
     for ob in meshes:
         bm = bmesh.new()
         bm.from_mesh(ob.data)
+        raw = len(bm.verts)
+        # glTF stores one vertex per (position, normal, UV) tuple and Blender's
+        # importer keeps that split (merge_vertices defaults off), so every UV
+        # seam and hard edge reads as a topological cut. Counting shells on the
+        # unwelded mesh measures the FILE FORMAT, not the model. Weld on
+        # position first -- the rig and the motion stage both already do
+        # (blender_motion.py welds at 2e-4 before parenting).
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-4)
         bm.verts.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
 
@@ -67,7 +75,8 @@ def report(path):
         hi = mathutils.Vector([max(c[k] for c in co) for k in range(3)])
         dims = hi - lo
 
-        print(f"  {ob.name}: {total} verts, {len(bm.faces)} faces")
+        print(f"  {ob.name}: {raw} verts as stored, {total} after welding, "
+              f"{len(bm.faces)} faces")
         print(f"    shells       {len(shells)}  (largest holds "
               f"{biggest / max(total, 1):.1%} of verts)")
         print(f"    fragments    {sum(1 for s in shells if len(s) < 50)} shells "

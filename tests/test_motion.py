@@ -78,3 +78,52 @@ def test_blender_motion_lines_reach_the_log(capsys, monkeypatch, tmp_path):
     out = capsys.readouterr().out
     assert "[motion] not exporting 1 stray object(s): Icosphere" in out
     assert "mumble" not in out
+
+
+def test_motion_stage_carries_height_and_moveset_to_blender(tmp_path, monkeypatch):
+    """The two keys that decide who a character IS: how tall, and whose punches.
+
+    Both were readable inside blender_motion.py long before anything wrote them,
+    so the authored GRAPPLER/STRIKER tables sat unused and every fighter shipped
+    at 1.8m playing the same shared mocap. This test is the rail against that
+    regressing quietly -- nothing else in the pipeline fails when they go missing.
+    """
+    captured = {}
+
+    def fake_run(argv, **kw):
+        try:
+            args = json.loads(argv[-1])
+        except json.JSONDecodeError:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        captured.update(args)
+        from pathlib import Path
+        (Path(args["out_dir"]) / "character.glb").write_bytes(b"g" * 60_000)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(motion.subprocess, "run", fake_run)
+    stage = motion.MotionStage(blender="blender", script="s.py")
+    stage.build(tmp_path / "mesh.glb", "humanoid", ["jab"], [], tmp_path / "out",
+                height=2.8, moveset="grappler")
+
+    assert captured["height"] == 2.8
+    assert captured["moveset"] == "grappler"
+
+
+def test_motion_stage_defaults_stay_backwards_compatible(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kw):
+        try:
+            args = json.loads(argv[-1])
+        except json.JSONDecodeError:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        captured.update(args)
+        from pathlib import Path
+        (Path(args["out_dir"]) / "character.glb").write_bytes(b"g" * 60_000)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(motion.subprocess, "run", fake_run)
+    motion.MotionStage(blender="blender", script="s.py").build(
+        tmp_path / "m.glb", "humanoid", ["idle"], [], tmp_path / "out")
+
+    assert captured["height"] == 1.8 and captured["moveset"] == ""

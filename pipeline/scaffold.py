@@ -279,8 +279,52 @@ def _voice_keys(char_glbs: list[str]) -> list[str]:
     return [k or "" for k in keys]
 
 
+def _player_shapes(char_glbs: list[str], heights: list[float] | None) -> str:
+    """One collision capsule per fighter, each as tall as its own model.
+
+    A single shared capsule is what shipped before, and at two different heights
+    it is wrong for at least one of them: too short and the head passes through
+    walls, too tall and the character floats. The mesh carries no collider of
+    its own, so this shape IS the character as far as physics is concerned.
+    """
+    n = min(len(char_glbs), MAX_PLAYERS) or 1
+    heights = heights or [_REF_H] * n
+    return "\n\n".join(
+        f'[sub_resource type="CapsuleShape3D" id="player_shape{i}"]\n'
+        f'height = {round(heights[i] if i < len(heights) else _REF_H, 3)}'
+        for i in range(n))
+
+
+# Every metre in the player node below was authored against a 1.8m figure, so
+# each is kept as a ratio of this rather than as a second number to remember.
+_REF_H = 1.8
+
+
+def _char_heights(game_dir, char_glbs: list[str]) -> list[float]:
+    """Each character's real height in metres, measured from its own .glb.
+
+    Read rather than configured on purpose. The scene has to agree with the
+    asset about how tall a fighter is -- a capsule shorter than the model lets
+    its head through walls, a camera pivot at the wrong fraction frames the
+    navel -- and a number typed in two places is a number that drifts. glTF is
+    Y-up and requires POSITION min/max, so this is always readable.
+    """
+    from .inspect3d import geometry
+    out = []
+    for res_path in char_glbs:
+        h = 0.0
+        src = Path(game_dir) / res_path.removeprefix("res://")
+        if src.exists():
+            g = geometry(src)
+            if g:
+                h = g["dims"][1]
+        out.append(h if h > 0.1 else _REF_H)
+    return out
+
+
 def _players(char_glbs: list[str], script_id: str | None, ext_res,
-             voice_keys: list[str] | None = None) -> str:
+             voice_keys: list[str] | None = None,
+             heights: list[float] | None = None) -> str:
     """Player bodies + the split-screen viewports their cameras render into.
 
     With one character this is the plain single-camera setup. With two, each
@@ -293,9 +337,12 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res,
     n = min(len(char_glbs), MAX_PLAYERS) or 1
     split = n > 1
     voice_keys = voice_keys or [""] * n
+    heights = heights or [_REF_H] * n
     out = []
     for i in range(n):
         name = f"Player{i + 1}" if split else "Player"
+        h = heights[i] if i < len(heights) else _REF_H
+        k = h / _REF_H
         x = (i - (n - 1) / 2) * 3.0
         cam = f'NodePath("../Split/Half{i}/View/Camera")' if split else None
         script = ""
@@ -322,18 +369,18 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res,
         # -Z, so an unrotated player starts nose-to-wall with the apse, the rose
         # window and every candle behind them
         out.append(f"""[node name="{name}" type="CharacterBody3D" parent="."]
-transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, {round(x, 2)}, 1.2, {SPAWN_Z})
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, {round(x, 2)}, {round(1.2 * k, 3)}, {SPAWN_Z})
 {script}
 [node name="Collision" type="CollisionShape3D" parent="{name}"]
-position = Vector3(0, 0.9, 0)
-shape = SubResource("player_shape")
+position = Vector3(0, {round(0.9 * k, 3)}, 0)
+shape = SubResource("player_shape{i}")
 
 [node name="CamPivot" type="Node3D" parent="{name}"]
-position = Vector3(0, 1.6, 0)
+position = Vector3(0, {round(1.6 * k, 3)}, 0)
 
 [node name="SpringArm3D" type="SpringArm3D" parent="{name}/CamPivot"]
-position = Vector3(0, 0.4, 0)
-spring_length = 3.5
+position = Vector3(0, {round(0.4 * k, 3)}, 0)
+spring_length = {round(3.5 * k, 3)}
 margin = 0.2
 
 [node name="CamMount" type="Marker3D" parent="{name}/CamPivot/SpringArm3D"]
@@ -368,7 +415,8 @@ current = true""")
 
 def _world_tscn(player_script: str | None, char_glbs: list[str],
                 env_glbs: list[str], env_ref: str | None = None,
-                voice_keys: list[str] | None = None) -> str:
+                voice_keys: list[str] | None = None,
+                heights: list[float] | None = None) -> str:
     from .palette import roles
     pal = roles(env_ref)
     ext, nodes, sub = [], [], []
@@ -395,7 +443,7 @@ shape = SubResource("prop_shape")
 [node name="PropMesh{i}" parent="Prop{i}" instance=ExtResource("{env_ids[gi]}")]""")
 
     script_id = ext_res("Script", player_script) if player_script else None
-    players = _players(char_glbs, script_id, ext_res, voice_keys)
+    players = _players(char_glbs, script_id, ext_res, voice_keys, heights)
 
     # candle-warm point lights around the room + a weak cool moonlight key
     candle_slots = [(x, round(-HALL_L / 2 + 5.0 + i * ((HALL_L - 10) / 5), 2))
@@ -419,8 +467,7 @@ shadow_enabled = {"true" if i % 3 == 0 else "false"}"""
 [sub_resource type="BoxShape3D" id="prop_shape"]
 size = Vector3(2.4, 4, 2.4)
 
-[sub_resource type="CapsuleShape3D" id="player_shape"]
-height = 1.8
+{_player_shapes(char_glbs, heights)}
 
 [sub_resource type="Environment" id="world_env"]
 background_mode = 1
@@ -615,7 +662,8 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         (game_dir / "scripts").mkdir(exist_ok=True)
         shutil.copy2(shot_src, game_dir / "scripts" / "godot_shot.gd")
     (game_dir / "scenes" / "world.tscn").write_text(
-        _world_tscn(player_script, char_glbs, env_glbs, env_ref, voice_keys),
+        _world_tscn(player_script, char_glbs, env_glbs, env_ref, voice_keys,
+                    _char_heights(game_dir, char_glbs)),
         encoding="utf-8")
     # the menu's backdrop is the run's own environment reference, copied in so
     # the exported game carries it

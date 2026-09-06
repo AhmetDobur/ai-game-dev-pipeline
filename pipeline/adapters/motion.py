@@ -77,7 +77,7 @@ class MotionStage:
         return r
 
     def unirig_skin(self, mesh_path: Path, body_plan: str, extras: list[str],
-                    out_dir: Path) -> Path | None:
+                    out_dir: Path, height: float = 1.8) -> Path | None:
         """Build our rig, then let UniRig predict its weights. None on failure.
 
         UniRig will also predict a skeleton, but its bones come out anonymous --
@@ -100,9 +100,13 @@ class MotionStage:
         target = out_dir / "_unirig_target.glb"
         merged = out_dir / "_unirig_out.glb"
 
+        # height matters on this pass too: it exports _unirig_target.glb, and
+        # the merged result comes back flagged prerigged, which the script
+        # re-imports without re-scaling. Omit it and the UniRig path silently
+        # ships a 1.8m character whatever was asked for.
         r = self._blender({"mesh": str(mesh_path), "body_plan": body_plan,
                            "extras": list(extras), "out_dir": str(out_dir),
-                           "rig_only": True})
+                           "height": height, "rig_only": True})
         if r.returncode != 0 or not rig_fbx.exists():
             print(f"[motion] rig export for UniRig failed (rc={r.returncode})",
                   flush=True)
@@ -163,13 +167,14 @@ class MotionStage:
         return merged
 
     def build(self, mesh_path: Path, body_plan: str, animations: list[str],
-              extras: list[str], out_dir: Path) -> list[Path]:
+              extras: list[str], out_dir: Path, height: float = 1.8,
+              moveset: str = "") -> list[Path]:
         """Rig `mesh_path` and animate it; return the produced .glb files."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         # A failed skinning pass is not a failed stage: the procedural rig has
         # already produced usable weights, so the character still animates.
-        rigged = self.unirig_skin(mesh_path, body_plan, extras, out_dir) \
+        rigged = self.unirig_skin(mesh_path, body_plan, extras, out_dir, height) \
             if self.unirig else None
         args = {
             "mesh": str(rigged or mesh_path),
@@ -178,6 +183,12 @@ class MotionStage:
             "animations": list(animations) or ["idle"],
             "extras": list(extras),
             "out_dir": str(out_dir),
+            "height": height,
+            # Which authored strike table to keyframe from. Without it every
+            # character falls through to the same shared mocap, so a grappler
+            # and a striker ship byte-identical punches -- which is exactly what
+            # the first two characters did.
+            "moveset": moveset,
             "cmu_dir": self.cmu_dir,
             "kimodo_url": self.kimodo_url,
         }
