@@ -461,10 +461,10 @@ shape = SubResource("prop_shape")
         f"""[node name="Lantern{i}" type="SpotLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, -0.0001, 1, 0, -1, -0.0001, 0, {HALL_H - 1.5}, {z})
 light_color = Color(1, 0.86, 0.68, 1)
-light_energy = 6.0
+light_energy = 14.0
 spot_range = {HALL_H + 2.0}
-spot_angle = 55.0
-spot_angle_attenuation = 0.6
+spot_angle = 62.0
+spot_angle_attenuation = 0.35
 shadow_enabled = {"true" if i % 2 == 0 else "false"}"""
         for i, z in enumerate(lantern_z))
 
@@ -497,7 +497,7 @@ ambient_light_source = 2
 ; hides whatever the art stage actually produced. Mood belongs to the lights
 ; (the candles below), not to a global wash over every asset.
 ambient_light_color = Color(0.30, 0.29, 0.28, 1)
-ambient_light_energy = 0.22
+ambient_light_energy = 0.38
 tonemap_mode = 3
 glow_enabled = true
 glow_intensity = 0.6
@@ -514,9 +514,12 @@ script = ExtResource("{shot_id}")
 environment = SubResource("world_env")
 
 [node name="Moon" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.707, -0.5, 0.5, 0, 0.707, 0.707, -0.707, -0.5, 0.5, 0, 10, 0)
-light_color = Color(0.65, 0.7, 0.9, 1)
-light_energy = 0.25
+; angled steeply down rather than raking across the nave: as a rim light at 45
+; degrees it lit the tops of the pillars and left both fighters as silhouettes,
+; and a dark-clothed character on a dark floor needs a key from overhead.
+transform = Transform3D(1, 0, 0, 0, 0.259, 0.966, 0, -0.966, 0.259, 0, 10, 0)
+light_color = Color(0.82, 0.82, 0.88, 1)
+light_energy = 0.9
 shadow_enabled = true
 
 {lanterns}
