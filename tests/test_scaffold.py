@@ -19,7 +19,13 @@ def test_scaffold_writes_runnable_skeleton(tmp_path):
              dep_specs={"r1-anim": {"mesh_from": "r1-mesh"}})
 
     proj = (game / "project.godot").read_text()
-    assert 'run/main_scene="res://scenes/world.tscn"' in proj
+    # the project opens on the title screen; the world is what FIGHT loads
+    assert 'run/main_scene="res://scenes/menu.tscn"' in proj
+    assert 'Settings="*res://scripts/settings.gd"' in proj
+    menu = (game / "scenes" / "menu.tscn").read_text()
+    assert 'world_scene = "res://scenes/world.tscn"' in menu
+    assert (game / "scripts" / "menu.gd").exists()
+    assert (game / "scripts" / "settings.gd").exists()
     assert "move_forward" in proj and '"' + 'My Game' + '"' in proj
     assert (game / "export_presets.cfg").exists()
     world = (game / "scenes" / "world.tscn").read_text()

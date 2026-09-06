@@ -78,27 +78,86 @@ def import_mesh(path):
 
 # --- rigging ---------------------------------------------------------------
 
-def try_unirig(mesh_obj, unirig, out_dir):
-    """Auto-rig any topology with UniRig if configured. Returns the armature or None.
-    Kept behind a broad except: a missing/failing UniRig must not sink the stage."""
+def try_unirig_skin(mesh_obj, arm, unirig, out_dir):
+    """Replace bone-heat weights with UniRig's, keeping the rig we just built.
+
+    UniRig will also predict a skeleton, but its bones come out anonymous --
+    bone_0 .. bone_27 -- while every authored moveset addresses LeftArm, Hand
+    and UpLeg by name. Adopting that skeleton would turn every clip into a
+    silent no-op, which is worse than not running UniRig at all. Its skinning
+    is the half worth having.
+
+    Bone heat gives a whole coat panel to whichever limb happens to hang inside
+    it. That is correct at rest and wrong the moment anything moves: on the
+    reference character it put 5.2% of the mesh on the arm bones with the worst
+    vertex 30% of body height away from the arm it followed, which is what "when
+    they punch, their entire cloak comes up" is when you measure it. Predicted
+    weights halve that and pull the worst case in to 19%, and the coat comes off
+    the thighs (7.7% -> 0.5%) and onto the hips, where a garment belongs.
+
+    Kept behind a broad except: a missing or failing UniRig must leave the
+    bone-heat weights in place rather than sink the stage.
+    """
     if not unirig or not os.path.isdir(unirig):
         return None
     try:
         import subprocess
-        rigged = os.path.join(out_dir, "_unirig.glb")
-        export_glb(rigged)  # hand UniRig the imported mesh
-        # UniRig's own CLI writes a rigged glb; convention: run.py <in> <out>
-        # sys.executable inside Blender is Blender's BUNDLED python, which has no
-        # UniRig deps — use the system python (override with UNIRIG_PYTHON)
+
         py = os.environ.get("UNIRIG_PYTHON", "python")
-        subprocess.run([py, os.path.join(unirig, "run.py"), rigged, rigged],
-                       check=True, cwd=unirig, timeout=1200)
+        rig_fbx = os.path.join(out_dir, "_unirig_in.fbx")
+        skin_fbx = os.path.join(out_dir, "_unirig_skin.fbx")
+        target = os.path.join(out_dir, "_unirig_target.glb")
+        merged = os.path.join(out_dir, "_unirig_out.glb")
+
+        # The mesh on disk is not the mesh being rigged -- sleeves have been
+        # trimmed and a head may have been grafted since -- so both the skin
+        # input and the merge target are exported from the live scene.
+        bpy.ops.object.select_all(action="DESELECT")
+        mesh_obj.select_set(True)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.export_scene.fbx(filepath=rig_fbx, use_selection=True,
+                                 add_leaf_bones=False, bake_anim=False)
+        export_glb(target, arm, mesh_obj)
+
+        env = dict(os.environ)
+        # torch 2.6 defaults torch.load to weights_only=True, which refuses the
+        # Box object UniRig's published checkpoints pickle beside their tensors.
+        env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
+        def run(argv):
+            subprocess.run([py] + argv, check=True, cwd=unirig, timeout=2400,
+                           env=env)
+
+        # the shell launchers in launch/inference are three python calls in a
+        # trench coat; called directly so this does not need bash on Windows
+        run(["-m", "src.data.extract",
+             "--config=configs/data/quick_inference.yaml",
+             "--require_suffix=obj,fbx,FBX,dae,glb,gltf,vrm",
+             "--force_override=true", "--num_runs=1", "--id=0",
+             "--time=motion", "--faces_target_count=50000",
+             f"--input={rig_fbx}", "--output_dir=tmp"])
+        run(["run.py", "--task=configs/task/quick_inference_unirig_skin.yaml",
+             "--seed=12345", f"--input={rig_fbx}", f"--output={skin_fbx}",
+             "--npz_dir=tmp", "--data_name=raw_data.npz"])
+        run(["-m", "src.inference.merge", f"--source={skin_fbx}",
+             f"--target={target}", f"--output={merged}"])
+
         reset_scene()
-        bpy.ops.import_scene.gltf(filepath=rigged)
+        bpy.ops.import_scene.gltf(filepath=merged)
         arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
-        return arms[0] if arms else None
-    except Exception as e:  # noqa: BLE001 — fall back to procedural rig
-        print(f"[motion] UniRig unavailable, procedural rig instead: {e}")
+        if not arms:
+            raise RuntimeError("merged file has no armature")
+        got = {b.name for b in arms[0].data.bones}
+        # The whole point was to keep our names. If they did not survive the
+        # round trip the movesets would run against nothing, so refuse the
+        # result rather than ship a character that stands still.
+        if "LeftHand" not in got or "Hips" not in got:
+            raise RuntimeError(f"bone names lost: {sorted(got)[:6]}")
+        print(f"[motion] UniRig skinning adopted ({len(got)} bones)")
+        return arms[0]
+    except Exception as e:  # noqa: BLE001 -- keep the bone-heat weights
+        print(f"[motion] UniRig skinning unavailable, bone heat instead: {e}")
         return None
 
 
@@ -2017,13 +2076,11 @@ def main():
 
     reset_scene()
     mesh = import_mesh(ARGS["mesh"])
-    arm = try_unirig(mesh, ARGS.get("unirig", ""), out_dir) if ARGS.get("unirig") else None
-    if arm is None:
-        # try_unirig may have reset the scene on failure; re-import so procedural_rig
-        # always gets a live mesh object (never a stale, deleted reference)
-        reset_scene()
-        mesh = import_mesh(ARGS["mesh"])
-        arm = procedural_rig(mesh, body_plan, extras)
+    arm = procedural_rig(mesh, body_plan, extras)
+    # Our skeleton either way; UniRig only ever replaces the weights on it.
+    skinned = try_unirig_skin(mesh, arm, ARGS.get("unirig", ""), out_dir)
+    if skinned is not None:
+        arm = skinned
 
     # build every clip as a named action stashed on its own NLA track, then export
     # ONE glb — Godot's AnimationPlayer then has idle/walk/run to switch between,

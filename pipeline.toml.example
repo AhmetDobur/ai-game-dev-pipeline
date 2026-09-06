@@ -32,7 +32,7 @@ timeout_s = 300
 blender = "C:/blender/blender.exe"
 script = "templates/blender_motion.py"
 cmu_dir = ""             # CMU BVH mocap library dir (optional; exact-match clips reused)
-unirig = ""              # UniRig checkpoint dir (optional; auto-rigs arbitrary meshes)
+unirig = ""              # UniRig repo dir (optional; predicts skin weights for our rig)
 kimodo_url = ""          # Kimodo local endpoint, e.g. http://127.0.0.1:8710 (optional)
 timeout_s = 1800
 

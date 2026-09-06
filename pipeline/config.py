@@ -55,7 +55,7 @@ DEFAULTS: dict = {
         "blender": "blender",                # Blender 4.x binary on PATH or absolute
         "script": "templates/blender_motion.py",
         "cmu_dir": "",                       # CMU BVH mocap library (optional; exact-match clips)
-        "unirig": "",                        # UniRig checkpoint dir (optional auto-rigger)
+        "unirig": "",                        # UniRig repo dir (optional; predicts skin weights)
         "kimodo_url": "",                    # Kimodo local endpoint for text->motion (optional)
         "timeout_s": 1800,
     },
