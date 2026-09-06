@@ -449,6 +449,25 @@ shape = SubResource("prop_shape")
     candle_slots = [(x, round(-HALL_L / 2 + 5.0 + i * ((HALL_L - 10) / 5), 2))
                     for i in range(6)
                     for x in (-HALL_W / 2 + 2.6, HALL_W / 2 - 2.6)]
+    # Overhead lanterns down the centre of the nave. The candles are wall-
+    # mounted at 3.2m and lit the pillars beautifully while leaving the aisle --
+    # the only place anybody actually fights -- in near darkness; the first
+    # split-screen shot showed two characters as silhouettes. These hang high
+    # and point straight down, so the fighters are lit from above without
+    # washing out the walls or touching the candles' mood.
+    lantern_z = [round(-HALL_L / 2 + 7.0 + i * ((HALL_L - 14) / 4), 2)
+                 for i in range(5)]
+    lanterns = "\n\n".join(
+        f"""[node name="Lantern{i}" type="SpotLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, -0.0001, 1, 0, -1, -0.0001, 0, {HALL_H - 1.5}, {z})
+light_color = Color(1, 0.86, 0.68, 1)
+light_energy = 6.0
+spot_range = {HALL_H + 2.0}
+spot_angle = 55.0
+spot_angle_attenuation = 0.6
+shadow_enabled = {"true" if i % 2 == 0 else "false"}"""
+        for i, z in enumerate(lantern_z))
+
     candles = "\n\n".join(
         f"""[node name="Candle{i}" type="OmniLight3D" parent="."]
 position = Vector3({x}, 3.2, {z})
@@ -478,7 +497,7 @@ ambient_light_source = 2
 ; hides whatever the art stage actually produced. Mood belongs to the lights
 ; (the candles below), not to a global wash over every asset.
 ambient_light_color = Color(0.30, 0.29, 0.28, 1)
-ambient_light_energy = 0.10
+ambient_light_energy = 0.22
 tonemap_mode = 3
 glow_enabled = true
 glow_intensity = 0.6
@@ -499,6 +518,8 @@ transform = Transform3D(0.707, -0.5, 0.5, 0, 0.707, 0.707, -0.707, -0.5, 0.5, 0,
 light_color = Color(0.65, 0.7, 0.9, 1)
 light_energy = 0.25
 shadow_enabled = true
+
+{lanterns}
 
 {candles}
 
