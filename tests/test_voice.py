@@ -68,3 +68,16 @@ def test_a_silent_take_is_not_a_take(tmp_path, monkeypatch):
     kept = make_voice.generate(tmp_path, lines={"effort_1": "<gasp>"},
                                bounds=make_voice._grunt_bounds)
     assert list(kept) == ["effort_1"]
+
+
+def test_the_effort_grunt_is_a_third_of_a_groan():
+    """Asked for, a groan comes back at 1.2-1.4s almost every time, and a 1.2s
+    grunt on a 0.5s punch is a different animal making it. Cut, not asked."""
+    from templates.make_voice import EFFORT_SECONDS, _effort_shape
+
+    out = _effort_shape(_tone(1.3))
+    assert abs(len(out) / SAMPLE_RATE - EFFORT_SECONDS) < 0.01
+    assert abs(out[-1]) < 1e-9                      # faded, not chopped
+    assert abs(out[0] - _tone(1.3)[0]) < 1e-9       # attack kept intact
+    short = _tone(0.2)
+    assert len(_effort_shape(short)) == len(short)  # nothing to cut

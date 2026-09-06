@@ -83,12 +83,18 @@ CHARACTERS = {
 #
 # Variety comes from asking again rather than from a longer list: the model is
 # sampled, so three requests for <gasp> are three different gasps.
-GRUNTS = {"effort": "<gasp>", "hurt": "<groan>"}
+GRUNTS = {"effort": "<groan>", "hurt": "<groan>"}
 GRUNT_TAKES = 3
 
-# A take can be the right length and still be nothing at all. 0.05 is well below
-# any real utterance here (the lines peak at 0.44-0.67) and well above the noise
-# that a silent take rounds to.
+# One tag, two shapes. <groan> is a voiced exhale, which is the right sound for
+# both -- what differs is how much of it you hear. A hit reaction runs its full
+# length; the breath on a jab is its first third, cut here rather than asked for,
+# because asking produced 1.2 to 1.4 seconds almost every time and a 1.2s grunt
+# on a 0.5s punch is a different animal making it. <gasp> was the alternative
+# and it is an intake, which is backwards for throwing a blow.
+EFFORT_SECONDS = 0.35
+EFFORT_FADE = 0.03
+
 MIN_PEAK = 0.05
 
 LINES = CHARACTERS["pious_force"]["lines"]
@@ -214,7 +220,7 @@ def write_wav(path, samples):
 
 
 def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
-             bounds=None):
+             bounds=None, shape=None):
     """Write one take per line. Returns the names that came back usable.
 
     `bounds` is (min_seconds, max_seconds) as a function of the text -- a take
@@ -234,6 +240,8 @@ def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
             continue
         words = len(text.split())
         samples = trim(decode(codes), min_seconds=words * SECONDS_PER_WORD)
+        if shape:
+            samples = shape(samples)
         seconds = len(samples) / SAMPLE_RATE
         lo, hi = bounds(text) if bounds else (0.0, float("inf"))
         if not lo <= seconds <= hi:
@@ -257,11 +265,21 @@ def _line_bounds(text):
     return words * 0.22, words * 0.75 + 1.0
 
 
-def _grunt_bounds(text):
-    # A groan legitimately runs past a second; a gasp on a jab is a fraction of
-    # one. A single cap tight enough for the punch threw away every usable
-    # groan at 1.3 and 1.5s.
-    return (0.08, 1.6) if "groan" in text else (0.08, 0.9)
+def _grunt_bounds(_text):
+    return 0.08, 1.6
+
+
+def _effort_shape(samples):
+    """The first third of a groan, faded out: one exhale, not a whole one."""
+    import numpy as np
+
+    n = int(EFFORT_SECONDS * SAMPLE_RATE)
+    if len(samples) <= n:
+        return samples
+    out = np.array(samples[:n], dtype=float)
+    fade = int(EFFORT_FADE * SAMPLE_RATE)
+    out[-fade:] *= np.linspace(1.0, 0.0, fade)
+    return out
 
 
 def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
@@ -286,12 +304,16 @@ def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
               for kind, text in GRUNTS.items()
               for i in range(1, GRUNT_TAKES + 1)}
     written = {}
-    for pending, bounds in ((dict(spec["lines"]), _line_bounds),
-                            (grunts, _grunt_bounds)):
+    passes = ((dict(spec["lines"]), _line_bounds, None),
+              ({k: v for k, v in grunts.items() if k.startswith("effort")},
+               _grunt_bounds, _effort_shape),
+              ({k: v for k, v in grunts.items() if k.startswith("hurt")},
+               _grunt_bounds, None))
+    for pending, bounds, shape in passes:
         for _ in range(tries):
             if not pending:
                 break
-            kept = generate(dest, spec["voice"], url, pending, bounds)
+            kept = generate(dest, spec["voice"], url, pending, bounds, shape)
             written.update(kept)
             for got in kept:
                 pending.pop(got, None)
