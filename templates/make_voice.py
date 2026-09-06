@@ -133,15 +133,27 @@ def decode(codes):
         return model.decode(layers).squeeze().cpu().numpy()
 
 
-def trim(samples, sr=SAMPLE_RATE, floor=0.06, gap=0.35, tail=0.08):
+# Speech runs at roughly this rate, and a take shorter than the words it was
+# asked for has been cut in the middle of them.
+SECONDS_PER_WORD = 0.28
+
+
+def trim(samples, sr=SAMPLE_RATE, floor=0.06, gap=0.6, tail=0.08,
+         min_seconds=0.0):
     """Cut the line back to the line.
 
     Orpheus does not reliably emit its end-of-speech token, and when it does not
     it keeps talking until n_predict runs out -- a four-word line came back as
     13.6 seconds, with the actual words in the first two. Waiting for the stop
     token is therefore not enough; the recording has to be cut on what is in it.
-    Speech ends at the first sustained silence after it starts, which is exactly
-    what a run-on has and a clean take does not.
+    Speech ends at a sustained silence, which is exactly what a run-on has and a
+    clean take does not.
+
+    A silence is not automatically the end, though. "Strength is lent. Never
+    owned." has a full stop in the middle of it, and cutting at the first pause
+    took that line down to 0.45 seconds -- one word and a breath. So the cut has
+    to clear min_seconds, which the caller derives from how many words it asked
+    for; below that the pause is punctuation, not the end of the take.
     """
     import numpy as np
 
@@ -156,9 +168,10 @@ def trim(samples, sr=SAMPLE_RATE, floor=0.06, gap=0.35, tail=0.08):
         return samples
     start = loud[0]
     end = loud[-1]
-    breaks = np.flatnonzero(np.diff(loud) > int(gap * sr))
-    if breaks.size:
-        end = loud[breaks[0]]
+    for b in np.flatnonzero(np.diff(loud) > int(gap * sr)):
+        if (loud[b] - start) / sr >= min_seconds:
+            end = loud[b]
+            break
     lo = max(0, start - int(0.03 * sr))
     hi = min(len(samples), end + int(tail * sr))
     return samples[lo:hi]
@@ -188,7 +201,8 @@ def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
         if len(codes) < FRAME:
             print(f"[voice] {name}: model returned no audio", flush=True)
             continue
-        samples = trim(decode(codes))
+        samples = trim(decode(codes),
+                       min_seconds=len(text.split()) * SECONDS_PER_WORD)
         seconds = len(samples) / SAMPLE_RATE
         if max_seconds and seconds > max_seconds:
             print(f"[voice] {name}: {seconds:.2f}s, over {max_seconds}s -- dropped",

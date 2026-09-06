@@ -44,3 +44,28 @@ def test_scaffold_survives_no_assets(tmp_path):
     scaffold(game, "Empty", {}, {}, {})
     assert (game / "project.godot").exists()
     assert (game / "scenes" / "world.tscn").exists()
+
+
+def test_each_fighter_gets_its_own_voice_folder(tmp_path):
+    """Two seats, two voices -- matched on the mesh name, not on finish order.
+
+    The art stage finishes the two characters in whatever order they happen to
+    render, so a seat that took its voice from the list position would swap the
+    two fighters' grunts between runs on the same project.
+    """
+    game = tmp_path / "game"
+    (game / "scripts").mkdir(parents=True)
+    (game / "scripts" / "player.gd").write_text("extends CharacterBody3D\n")
+    shadow = tmp_path / "veiled_shadow.glb"; shadow.write_bytes(b"g" * 10)
+    pious = tmp_path / "pious_force.glb"; pious.write_bytes(b"g" * 10)
+
+    scaffold(game, "Two",
+             dep_outputs={"r1-a": [str(shadow)], "r1-b": [str(pious)]},
+             dep_types={"r1-a": "rig_animate", "r1-b": "rig_animate"},
+             dep_specs={})
+
+    world = (game / "scenes" / "world.tscn").read_text()
+    p1 = world.split('[node name="Player1"')[1].split("[node")[0]
+    p2 = world.split('[node name="Player2"')[1].split("[node")[0]
+    assert 'voice_dir = "res://audio/voice/veiled_shadow"' in p1
+    assert 'voice_dir = "res://audio/voice/pious_force"' in p2

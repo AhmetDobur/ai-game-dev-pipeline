@@ -5,6 +5,7 @@ the input map, the export preset and a world scene wiring the generated assets â
 is written HERE, deterministically. A generated scene file is a wildcard (the
 coder has produced GDScript inside a .tscn); a templated one always parses.
 """
+import os
 import math
 import shutil
 import sys
@@ -251,7 +252,35 @@ MAX_PLAYERS = 2          # split-screen halves; a third would need a 2x2 grid
 SPAWN_Z = -16.0          # near the hall's entrance, facing the apse
 
 
-def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
+def _voice_keys(char_glbs: list[str]) -> list[str]:
+    """Which generated voice set belongs to each seat.
+
+    Matched on the mesh's own filename first, because a run that produced
+    pious_force.glb and veiled_shadow.glb should not depend on which order the
+    art stage happened to finish them in. Anything unmatched falls through to
+    the remaining sets in declaration order, so a project with differently
+    named characters still gets two distinct voices rather than none.
+    """
+    try:
+        from templates.make_voice import CHARACTERS
+    except ImportError:
+        return [""] * len(char_glbs)
+    keys: list[str | None] = [None] * len(char_glbs)
+    free = list(CHARACTERS)
+    for i, glb in enumerate(char_glbs):
+        stem = Path(glb).stem.lower()
+        hit = next((k for k in free if any(w in stem for w in k.split("_"))), None)
+        if hit:
+            keys[i] = hit
+            free.remove(hit)
+    for i, k in enumerate(keys):
+        if k is None and free:
+            keys[i] = free.pop(0)
+    return [k or "" for k in keys]
+
+
+def _players(char_glbs: list[str], script_id: str | None, ext_res,
+             voice_keys: list[str] | None = None) -> str:
     """Player bodies + the split-screen viewports their cameras render into.
 
     With one character this is the plain single-camera setup. With two, each
@@ -263,6 +292,7 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
     """
     n = min(len(char_glbs), MAX_PLAYERS) or 1
     split = n > 1
+    voice_keys = voice_keys or [""] * n
     out = []
     for i in range(n):
         name = f"Player{i + 1}" if split else "Player"
@@ -273,6 +303,8 @@ def _players(char_glbs: list[str], script_id: str | None, ext_res) -> str:
             script = f'script = ExtResource("{script_id}")\ndevice = {i}\n'
             if cam:
                 script += f'camera_path = {cam}\n'
+            if i < len(voice_keys) and voice_keys[i]:
+                script += f'voice_dir = "res://audio/voice/{voice_keys[i]}"\n'
         mesh = ""
         if i < len(char_glbs):
             mid = ext_res("PackedScene", char_glbs[i])
@@ -335,7 +367,8 @@ current = true""")
 
 
 def _world_tscn(player_script: str | None, char_glbs: list[str],
-                env_glbs: list[str], env_ref: str | None = None) -> str:
+                env_glbs: list[str], env_ref: str | None = None,
+                voice_keys: list[str] | None = None) -> str:
     from .palette import roles
     pal = roles(env_ref)
     ext, nodes, sub = [], [], []
@@ -362,7 +395,7 @@ shape = SubResource("prop_shape")
 [node name="PropMesh{i}" parent="Prop{i}" instance=ExtResource("{env_ids[gi]}")]""")
 
     script_id = ext_res("Script", player_script) if player_script else None
-    players = _players(char_glbs, script_id, ext_res)
+    players = _players(char_glbs, script_id, ext_res, voice_keys)
 
     # candle-warm point lights around the room + a weak cool moonlight key
     candle_slots = [(x, round(-HALL_L / 2 + 5.0 + i * ((HALL_L - 10) / 5), 2))
@@ -564,12 +597,26 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         (game_dir / "audio").mkdir(exist_ok=True)
         _make_sfx(str(game_dir / "audio"))
 
+    # Voices are the one part of the audio that needs a model running, so unlike
+    # the strike sounds they are opt-in: with no ORPHEUS_URL the characters
+    # fight silently, which is what player.gd already does with a missing wav.
+    voice_keys = _voice_keys(char_glbs)
+    orpheus = os.environ.get("ORPHEUS_URL", "")
+    if orpheus and any(voice_keys):
+        try:
+            from templates.make_voice import generate_character
+            for key in dict.fromkeys(k for k in voice_keys if k):
+                generate_character(str(game_dir / "audio" / "voice"), key, orpheus)
+        except Exception as exc:            # a silent fighter beats a failed run
+            print(f"[scaffold] voice generation skipped: {exc}", flush=True)
+
     shot_src = Path(__file__).resolve().parent.parent / "templates" / "godot_shot.gd"
     if shot_src.exists():
         (game_dir / "scripts").mkdir(exist_ok=True)
         shutil.copy2(shot_src, game_dir / "scripts" / "godot_shot.gd")
     (game_dir / "scenes" / "world.tscn").write_text(
-        _world_tscn(player_script, char_glbs, env_glbs, env_ref), encoding="utf-8")
+        _world_tscn(player_script, char_glbs, env_glbs, env_ref, voice_keys),
+        encoding="utf-8")
     # the menu's backdrop is the run's own environment reference, copied in so
     # the exported game carries it
     menu_bg = ""

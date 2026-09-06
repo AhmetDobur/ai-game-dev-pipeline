@@ -12,6 +12,10 @@ extends CharacterBody3D
 ## SubViewport and therefore CANNOT be a child of the player, so its transform is
 ## carried across each frame instead.
 @export var camera_path: NodePath
+## Folder of this character's generated voice takes, e.g.
+## res://audio/voice/pious_force. Empty means the character fights silently,
+## which is what a project scaffolded without a running Orpheus server gets.
+@export var voice_dir: String = ""
 
 const SPEED := 4.5
 const RUN_SPEED := 8.0
@@ -22,6 +26,8 @@ const RUN_STICK := 0.75        # push the stick past this and the character runs
 const GRAVITY := 18.0
 const PITCH_LIMIT := 1.2
 const MOUSE_SENS := 0.0022
+const REACH := 1.4              # how far a landed blow carries, in metres
+const VOICE_TAKES := 3          # takes per grunt, matching make_voice.py
 
 @onready var _pivot: Node3D = $CamPivot
 @onready var _spring: SpringArm3D = $CamPivot/SpringArm3D
@@ -35,6 +41,8 @@ var _pad_left := false      # edge detection for pad buttons, which have no
 var _pad_right := false     # just_pressed equivalent per device
 var _clip := ""
 var _keyboard := true
+var _voice: AudioStreamPlayer = null
+var _takes := {}                # "effort"/"hurt" -> paths that actually exist
 
 
 func _ready() -> void:
@@ -57,6 +65,9 @@ func _ready() -> void:
 	_combat = CombatController.new()
 	add_child(_combat)
 	_combat.setup(_anim)
+	_load_voice()
+	# swinging is the grunt, landing is the other guy's problem
+	_combat.strike_started.connect(func(_m, _c): _speak("effort"))
 	var skel := find_child("Skeleton3D", true, false) as Skeleton3D
 	if skel:
 		_cloak = CloakPhysics.new()
@@ -67,6 +78,66 @@ func _ready() -> void:
 		# is the moment the illusion drops
 		_combat.strike_landed.connect(func(_m, _d):
 			_cloak.impulse(-global_transform.basis.z, 0.06))
+	_combat.strike_landed.connect(_on_landed)
+
+
+func _load_voice() -> void:
+	# Resolved by name rather than by listing the folder: an exported build
+	# ships wavs as imported samples, and DirAccess over res:// does not see
+	# them, so a globbed lookup works in the editor and silently finds nothing
+	# in the game everybody else plays.
+	_voice = AudioStreamPlayer.new()
+	_voice.bus = "Voice"
+	add_child(_voice)
+	if voice_dir == "":
+		return
+	for kind in ["effort", "hurt"]:
+		var found := []
+		for i in range(1, VOICE_TAKES + 1):
+			var path := "%s/voice_%s_%d.wav" % [voice_dir, kind, i]
+			if ResourceLoader.exists(path):
+				found.append(path)
+		_takes[kind] = found
+
+
+func _speak(kind: String, interrupt := false) -> void:
+	# One voice at a time. A two-hit combo that stacks two grunts sounds like
+	# two people, and taking a punch mid-swing should cut the effort off rather
+	# than play over it -- which is the whole reason hurt interrupts.
+	if _voice == null or (_voice.playing and not interrupt):
+		return
+	var takes: Array = _takes.get(kind, [])
+	if takes.is_empty():
+		return
+	_voice.stream = load(takes[randi() % takes.size()])
+	_voice.play()
+
+
+func _on_landed(_move: String, damage: float) -> void:
+	var other := _opponent_in_front()
+	if other and other.has_method("hurt"):
+		other.hurt(damage, -global_transform.basis.z)
+
+
+func _opponent_in_front() -> Node3D:
+	# A reach test against the other seats, not a physics query: the fighters
+	# are the only bodies that can be hit, there are at most two of them, and a
+	# shape cast would need a hitbox per limb to be worth its own complexity.
+	for other in get_parent().get_children():
+		if other == self or not (other is CharacterBody3D):
+			continue
+		var to: Vector3 = other.global_position - global_position
+		if to.length() <= REACH \
+				and to.normalized().dot(-global_transform.basis.z) > 0.3:
+			return other
+	return null
+
+
+## Took one. Called by whoever threw it.
+func hurt(damage: float, from_dir: Vector3) -> void:
+	_speak("hurt", true)
+	if _cloak:
+		_cloak.impulse(from_dir, 0.02 + damage * 0.008)
 
 
 func _refresh_seat() -> void:
