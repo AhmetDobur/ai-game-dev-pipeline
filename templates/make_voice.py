@@ -71,16 +71,11 @@ CHARACTERS = {
 GRUNTS = {
     "effort_1": "Hah!",
     "effort_2": "Hup!",
-    "effort_3": "Tsah!",
+    "effort_3": "Hyah!",
     "hurt_1":   "<groan>",
     "hurt_2":   "Agh!",
     "hurt_3":   "Ngh!",
 }
-
-# A grunt is a beat, not a sentence. Orpheus does not reliably stop, and trim()
-# cuts on silence, so a take that still runs this long is one where the model
-# carried on into words -- unusable as a hit reaction whatever it says.
-GRUNT_MAX_SECONDS = 1.1
 
 LINES = CHARACTERS["pious_force"]["lines"]
 
@@ -91,8 +86,23 @@ def _post(url, path, obj, timeout=900):
     return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
 
 
-def codes_for(text, voice, url, n_predict=700, temperature=0.6):
+def budget_tokens(text, headroom=1.2):
+    """How many tokens this line could possibly need, from its own word count.
+
+    The run-ons are not really a trimming problem, they are a budget problem:
+    asked for 700 tokens the model will happily fill all 8.5 seconds of them
+    with a three-word line, and then the trimmer is left guessing which of the
+    silences inside that was the end. Sized from the text there is nothing to
+    guess about -- a line gets its own length plus generous headroom, because
+    clipping the last word is worse than a little trailing silence.
+    """
+    seconds = len(text.split()) * 0.45 + headroom
+    return int(seconds * SAMPLE_RATE / 2048) * FRAME
+
+
+def codes_for(text, voice, url, n_predict=None, temperature=0.6):
     """Ask the model for one line and return its SNAC codes, frame-aligned."""
+    n_predict = n_predict or budget_tokens(text)
     ids = _post(url, "/tokenize", {"content": f"{voice}: {text}"})["tokens"]
     # 128259 opens the utterance; 128009 (end of turn) and 128260 close the
     # text and hand over to audio. Sent as ids rather than as a string so the
@@ -190,38 +200,57 @@ def write_wav(path, samples):
 
 
 def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
-             max_seconds=None):
+             bounds=None):
+    """Write one take per line. Returns the names that came back usable.
+
+    `bounds` is (min_seconds, max_seconds) as a function of the text -- a take
+    outside them is not written at all. Both ends matter and for opposite
+    reasons: too long is the model carrying on past the line, too short is a
+    take cut off inside it, and both are more common than a clean one.
+    """
     from pathlib import Path
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    written = []
+    kept = {}
     for name, text in (lines or LINES).items():
         codes = codes_for(text, voice, url)
         if len(codes) < FRAME:
             print(f"[voice] {name}: model returned no audio", flush=True)
             continue
-        samples = trim(decode(codes),
-                       min_seconds=len(text.split()) * SECONDS_PER_WORD)
+        words = len(text.split())
+        samples = trim(decode(codes), min_seconds=words * SECONDS_PER_WORD)
         seconds = len(samples) / SAMPLE_RATE
-        if max_seconds and seconds > max_seconds:
-            print(f"[voice] {name}: {seconds:.2f}s, over {max_seconds}s -- dropped",
-                  flush=True)
+        lo, hi = bounds(text) if bounds else (0.0, float("inf"))
+        if not lo <= seconds <= hi:
+            print(f"[voice] {name}: {seconds:.2f}s, outside {lo:.2f}-{hi:.2f}s "
+                  f"-- dropped", flush=True)
             continue
         path = out / f"voice_{name}.wav"
         write_wav(path, samples)
-        written.append(path)
+        kept[name] = path
         print(f"[voice] {name}: {seconds:.2f}s -> {path}", flush=True)
-    return written
+    return kept
+
+
+def _line_bounds(text):
+    words = len(text.split())
+    return words * 0.22, words * 0.75 + 1.0
+
+
+def _grunt_bounds(text):
+    # A groan legitimately runs past a second; an exhale on a jab is a fifth of
+    # one (the takes that worked came back at 0.26 and 0.22). A single cap tight
+    # enough for the punch threw away every usable groan at 1.3 and 1.5s.
+    return (0.08, 1.6) if "groan" in text else (0.08, 0.8)
 
 
 def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
     """Every line plus the grunts for one fighter, into out_dir/<name>/.
 
-    Grunts are retried. A spoken line that comes back long is still a usable
-    spoken line, but a hit reaction that runs past a second is not a hit
-    reaction at all, and the model produces one often enough that asking once
-    leaves the character silent when it is punched.
+    Retried, lines as well as grunts. The model misses in both directions often
+    enough that asking once leaves a character with half a voice -- and a fight
+    where one side grunts and the other does not is worse than neither.
     """
     from pathlib import Path
 
@@ -229,19 +258,20 @@ def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
     if spec is None:
         raise KeyError(f"no voice set for {name!r}; have {sorted(CHARACTERS)}")
     dest = Path(out_dir) / name
-    voice = spec["voice"]
-    written = generate(dest, voice, url, spec["lines"])
-    pending = dict(GRUNTS)
-    for _ in range(tries):
-        if not pending:
-            break
-        got = generate(dest, voice, url, pending, GRUNT_MAX_SECONDS)
-        written += got
-        for path in got:
-            pending.pop(path.stem[len("voice_"):], None)
-    for name_ in pending:
-        print(f"[voice] {name_}: no short take in {tries} tries", flush=True)
-    return written
+    written = {}
+    for pending, bounds in ((dict(spec["lines"]), _line_bounds),
+                            (dict(GRUNTS), _grunt_bounds)):
+        for _ in range(tries):
+            if not pending:
+                break
+            kept = generate(dest, spec["voice"], url, pending, bounds)
+            written.update(kept)
+            for got in kept:
+                pending.pop(got, None)
+        for missing in pending:
+            print(f"[voice] {missing}: no usable take in {tries} tries",
+                  flush=True)
+    return list(written.values())
 
 
 if __name__ == "__main__":
