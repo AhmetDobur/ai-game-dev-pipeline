@@ -49,3 +49,22 @@ def test_the_request_is_sized_to_the_line():
     assert short < long < 700
     # enough rope for the words themselves, or the last one is clipped off
     assert short / FRAME * 2048 / SAMPLE_RATE > 4 * SECONDS_PER_WORD
+
+
+def test_a_silent_take_is_not_a_take(tmp_path, monkeypatch):
+    """The failure that got through: right length, complete digital silence.
+
+    "Hah!", "Hyah!", "Agh!" and "Ngh!" each came back at a plausible 0.15-0.34s
+    and peaked at 0.00 -- four grunts that passed every duration check and made
+    no sound. Only Orpheus's own <groan> tag produced audio."""
+    from templates import make_voice
+
+    takes = iter([np.zeros(int(0.3 * SAMPLE_RATE)), _tone(0.3, 0.5)])
+    monkeypatch.setattr(make_voice, "codes_for", lambda *a, **k: [0] * 7)
+    monkeypatch.setattr(make_voice, "decode", lambda _c: next(takes))
+
+    assert make_voice.generate(tmp_path, lines={"effort_1": "<gasp>"},
+                               bounds=make_voice._grunt_bounds) == {}
+    kept = make_voice.generate(tmp_path, lines={"effort_1": "<gasp>"},
+                               bounds=make_voice._grunt_bounds)
+    assert list(kept) == ["effort_1"]

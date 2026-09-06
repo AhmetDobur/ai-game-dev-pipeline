@@ -92,6 +92,10 @@ func setup(anim: AnimationPlayer) -> void:
 
 	_swing = AudioStreamPlayer.new()
 	_impact = AudioStreamPlayer.new()
+	# on the SFX bus, so the settings screen's slider reaches them; the Settings
+	# autoload creates the bus before any scene loads
+	_swing.bus = "SFX"
+	_impact.bus = "SFX"
 	add_child(_swing)
 	add_child(_impact)
 

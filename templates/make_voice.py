@@ -45,7 +45,7 @@ CHARACTERS = {
             "intro_praise":  "I only praise Him.",
             "intro_name":    "I raise no hand but in His name.",
             "intro_lent":    "Strength is lent. Never owned.",
-            "victory_glory": "I seek no glory. It was never mine to keep.",
+            "victory_glory": "It was never mine to keep.",
             "victory_mercy": "Mercy first. Then force.",
         },
     },
@@ -60,22 +60,25 @@ CHARACTERS = {
     },
 }
 
-# Striking and struck. Both fighters say the same nothing -- what differs is the
-# voice saying it, which is the whole reason these are generated per character
+# Striking and struck. Both fighters make the same noises -- what differs is the
+# voice making them, which is the whole reason these are generated per character
 # rather than shipped as one shared folder of grunts.
 #
-# <groan> is one of Orpheus's own emotion tags, so it is spoken as a sound
-# rather than read out as a word. The interjections are spelled the way the
-# model pronounces them, which is not always the way they are usually written --
-# "Hup" survives, "Hnn" comes back as letters.
-GRUNTS = {
-    "effort_1": "Hah!",
-    "effort_2": "Hup!",
-    "effort_3": "Hyah!",
-    "hurt_1":   "<groan>",
-    "hurt_2":   "Agh!",
-    "hurt_3":   "Ngh!",
-}
+# These are Orpheus's own emotion tags rather than spelled-out interjections,
+# because spelling them does not work. Measured: <groan> came back as 1.23s of
+# real audio, while "Hah!", "Hyah!", "Agh!" and "Ngh!" all came back as takes of
+# the right LENGTH and complete digital silence -- peak 0.00 -- which is why
+# every take is now checked for signal and not just for duration.
+#
+# Variety comes from asking again rather than from a longer list: the model is
+# sampled, so three requests for <gasp> are three different gasps.
+GRUNTS = {"effort": "<gasp>", "hurt": "<groan>"}
+GRUNT_TAKES = 3
+
+# A take can be the right length and still be nothing at all. 0.05 is well below
+# any real utterance here (the lines peak at 0.44-0.67) and well above the noise
+# that a silent take rounds to.
+MIN_PEAK = 0.05
 
 LINES = CHARACTERS["pious_force"]["lines"]
 
@@ -226,6 +229,11 @@ def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
             print(f"[voice] {name}: {seconds:.2f}s, outside {lo:.2f}-{hi:.2f}s "
                   f"-- dropped", flush=True)
             continue
+        peak = float(abs(samples).max()) if len(samples) else 0.0
+        if peak < MIN_PEAK:
+            print(f"[voice] {name}: silent take (peak {peak:.3f}) -- dropped",
+                  flush=True)
+            continue
         path = out / f"voice_{name}.wav"
         write_wav(path, samples)
         kept[name] = path
@@ -239,10 +247,10 @@ def _line_bounds(text):
 
 
 def _grunt_bounds(text):
-    # A groan legitimately runs past a second; an exhale on a jab is a fifth of
-    # one (the takes that worked came back at 0.26 and 0.22). A single cap tight
-    # enough for the punch threw away every usable groan at 1.3 and 1.5s.
-    return (0.08, 1.6) if "groan" in text else (0.08, 0.8)
+    # A groan legitimately runs past a second; a gasp on a jab is a fraction of
+    # one. A single cap tight enough for the punch threw away every usable
+    # groan at 1.3 and 1.5s.
+    return (0.08, 1.6) if "groan" in text else (0.08, 0.9)
 
 
 def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
@@ -258,9 +266,17 @@ def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
     if spec is None:
         raise KeyError(f"no voice set for {name!r}; have {sorted(CHARACTERS)}")
     dest = Path(out_dir) / name
+    # A dropped take leaves the previous run's file behind, and the game would
+    # happily play an 8-second victory line that this run rejected.
+    dest.mkdir(parents=True, exist_ok=True)
+    for stale in dest.glob("voice_*.wav"):
+        stale.unlink()
+    grunts = {f"{kind}_{i}": text
+              for kind, text in GRUNTS.items()
+              for i in range(1, GRUNT_TAKES + 1)}
     written = {}
     for pending, bounds in ((dict(spec["lines"]), _line_bounds),
-                            (dict(GRUNTS), _grunt_bounds)):
+                            (grunts, _grunt_bounds)):
         for _ in range(tries):
             if not pending:
                 break
