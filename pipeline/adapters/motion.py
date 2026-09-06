@@ -17,6 +17,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from ..inspect3d import vertex_count
+
 
 class MotionStage:
     def __init__(self, blender: str = "blender",
@@ -135,7 +137,21 @@ class MotionStage:
                       f"keeping bone-heat weights:\n"
                       f"{(r.stderr or r.stdout or '')[-800:]}", flush=True)
                 return None
-        return merged if merged.exists() else None
+        if not merged.exists():
+            return None
+
+        # The merge is only supposed to move WEIGHTS onto our rig, so the mesh
+        # that comes back must be the mesh that went in. On this figure it was
+        # not: 296k vertices in, 311k out, and the extra ones are the mesh torn
+        # into ribbons -- visible in the REST pose, before a single clip plays.
+        # Vertex count is the cheap objective tell, and it costs one header read.
+        before, after = vertex_count(target), vertex_count(merged)
+        if before and after and abs(after - before) > before * 0.01:
+            print(f"[motion] UniRig merge returned a different mesh "
+                  f"({before} -> {after} verts), keeping bone-heat weights",
+                  flush=True)
+            return None
+        return merged
 
     def build(self, mesh_path: Path, body_plan: str, animations: list[str],
               extras: list[str], out_dir: Path) -> list[Path]:

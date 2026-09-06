@@ -55,7 +55,12 @@ DEFAULTS: dict = {
         "blender": "blender",                # Blender 4.x binary on PATH or absolute
         "script": "templates/blender_motion.py",
         "cmu_dir": "",                       # CMU BVH mocap library (optional; exact-match clips)
-        "unirig": "",                        # UniRig repo dir (optional; predicts skin weights)
+        # UniRig repo dir. Optional and OFF by default: on Pious Force its
+        # merge stage handed back a torn mesh (296k -> 311k verts, ribbons
+        # visible in the rest pose) and bone heat was the better of the two.
+        # MotionStage rejects that automatically now, so turning this on costs
+        # a few minutes rather than a broken character.
+        "unirig": "",
         "kimodo_url": "",                    # Kimodo local endpoint for text->motion (optional)
         "timeout_s": 1800,
     },

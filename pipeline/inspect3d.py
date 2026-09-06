@@ -77,6 +77,21 @@ def gltf_doc(mesh: Path) -> dict | None:
         return None                # unreadable -- never a rejection
 
 
+def vertex_count(mesh: Path) -> int | None:
+    """Total POSITION count across every primitive, or None when unreadable."""
+    doc = gltf_doc(mesh)
+    if not doc:
+        return None
+    acc = doc.get("accessors", [])
+    total = 0
+    for m in doc.get("meshes", []):
+        for prim in m.get("primitives", []):
+            i = prim.get("attributes", {}).get("POSITION")
+            if i is not None:
+                total += acc[i].get("count", 0)
+    return total
+
+
 def clips(mesh: Path) -> list[dict]:
     """Every animation in a .glb: name, duration in seconds, bones it moves.
 

@@ -16,7 +16,8 @@ from a reference implementation:
     every audio token then satisfies  code = id - 128266 - (index % 7) * 4096
     and lands inside 0..4095, in frames of seven
 
-    python make_voice.py <out_dir> [--voice leo] [--url http://127.0.0.1:8090]
+    python make_voice.py <out_dir> [--character pious_force]
+                         [--url http://127.0.0.1:8090]
 """
 import json
 import sys
@@ -34,13 +35,54 @@ SAMPLE_RATE = 24000
 # The pious grappler's lines. Written to be devout rather than to quote: a fight
 # taunt built out of scripture is the thing to avoid, so these are a believer's
 # own words about where he thinks his strength comes from.
-LINES = {
-    "intro_praise":   "I only praise Him.",
-    "intro_name":     "I raise no hand but in His name.",
-    "intro_lent":     "Strength is lent. Never owned.",
-    "victory_glory":  "I seek no glory. It was never mine to keep.",
-    "victory_mercy":  "Mercy first. Then force.",
+#
+# The striker next to him is not religious -- that register belongs to one
+# character, not to the game -- so hers are about not being seen.
+CHARACTERS = {
+    "pious_force": {
+        "voice": "leo",
+        "lines": {
+            "intro_praise":  "I only praise Him.",
+            "intro_name":    "I raise no hand but in His name.",
+            "intro_lent":    "Strength is lent. Never owned.",
+            "victory_glory": "I seek no glory. It was never mine to keep.",
+            "victory_mercy": "Mercy first. Then force.",
+        },
+    },
+    "veiled_shadow": {
+        "voice": "tara",
+        "lines": {
+            "intro_unseen":  "You will not see the one that lands.",
+            "intro_watch":   "Watch closely. It will not help.",
+            "victory_never": "You were never fighting me.",
+            "victory_kept":  "Nothing to see. As promised.",
+        },
+    },
 }
+
+# Striking and struck. Both fighters say the same nothing -- what differs is the
+# voice saying it, which is the whole reason these are generated per character
+# rather than shipped as one shared folder of grunts.
+#
+# <groan> is one of Orpheus's own emotion tags, so it is spoken as a sound
+# rather than read out as a word. The interjections are spelled the way the
+# model pronounces them, which is not always the way they are usually written --
+# "Hup" survives, "Hnn" comes back as letters.
+GRUNTS = {
+    "effort_1": "Hah!",
+    "effort_2": "Hup!",
+    "effort_3": "Tsah!",
+    "hurt_1":   "<groan>",
+    "hurt_2":   "Agh!",
+    "hurt_3":   "Ngh!",
+}
+
+# A grunt is a beat, not a sentence. Orpheus does not reliably stop, and trim()
+# cuts on silence, so a take that still runs this long is one where the model
+# carried on into words -- unusable as a hit reaction whatever it says.
+GRUNT_MAX_SECONDS = 1.1
+
+LINES = CHARACTERS["pious_force"]["lines"]
 
 
 def _post(url, path, obj, timeout=900):
@@ -134,7 +176,8 @@ def write_wav(path, samples):
         w.writeframes(pcm.tobytes())
 
 
-def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None):
+def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None,
+             max_seconds=None):
     from pathlib import Path
 
     out = Path(out_dir)
@@ -145,16 +188,54 @@ def generate(out_dir, voice="leo", url="http://127.0.0.1:8090", lines=None):
         if len(codes) < FRAME:
             print(f"[voice] {name}: model returned no audio", flush=True)
             continue
+        samples = trim(decode(codes))
+        seconds = len(samples) / SAMPLE_RATE
+        if max_seconds and seconds > max_seconds:
+            print(f"[voice] {name}: {seconds:.2f}s, over {max_seconds}s -- dropped",
+                  flush=True)
+            continue
         path = out / f"voice_{name}.wav"
-        write_wav(path, trim(decode(codes)))
+        write_wav(path, samples)
         written.append(path)
-        print(f"[voice] {name}: {len(codes) // FRAME} frames -> {path}", flush=True)
+        print(f"[voice] {name}: {seconds:.2f}s -> {path}", flush=True)
+    return written
+
+
+def generate_character(out_dir, name, url="http://127.0.0.1:8090", tries=3):
+    """Every line plus the grunts for one fighter, into out_dir/<name>/.
+
+    Grunts are retried. A spoken line that comes back long is still a usable
+    spoken line, but a hit reaction that runs past a second is not a hit
+    reaction at all, and the model produces one often enough that asking once
+    leaves the character silent when it is punched.
+    """
+    from pathlib import Path
+
+    spec = CHARACTERS.get(name)
+    if spec is None:
+        raise KeyError(f"no voice set for {name!r}; have {sorted(CHARACTERS)}")
+    dest = Path(out_dir) / name
+    voice = spec["voice"]
+    written = generate(dest, voice, url, spec["lines"])
+    pending = dict(GRUNTS)
+    for _ in range(tries):
+        if not pending:
+            break
+        got = generate(dest, voice, url, pending, GRUNT_MAX_SECONDS)
+        written += got
+        for path in got:
+            pending.pop(path.stem[len("voice_"):], None)
+    for name_ in pending:
+        print(f"[voice] {name_}: no short take in {tries} tries", flush=True)
     return written
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
     dest = args[0] if args else "."
-    voice = args[args.index("--voice") + 1] if "--voice" in args else "leo"
     url = args[args.index("--url") + 1] if "--url" in args else "http://127.0.0.1:8090"
-    generate(dest, voice, url)
+    if "--character" in args:
+        generate_character(dest, args[args.index("--character") + 1], url)
+    else:
+        for name in CHARACTERS:
+            generate_character(dest, name, url)

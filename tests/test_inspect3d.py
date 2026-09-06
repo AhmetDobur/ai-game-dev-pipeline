@@ -62,3 +62,54 @@ def test_render_preview_passes_absolute_paths_to_blender(tmp_path, monkeypatch):
     glb_arg, out_arg = seen["cmd"][-2], seen["cmd"][-1]
     assert Path(glb_arg).is_absolute() and Path(out_arg).is_absolute()
     assert Path(out_arg).parent == (tmp_path / "art").resolve()
+
+
+def _glb(path, doc):
+    """Minimal GLB container around a glTF JSON document."""
+    import json
+    import struct
+
+    js = json.dumps(doc).encode()
+    js += b" " * (-len(js) % 4)
+    body = struct.pack("<I", len(js)) + b"JSON" + js
+    path.write_bytes(b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body)
+    return path
+
+
+def _mesh_glb(path, counts):
+    return _glb(path, {
+        "accessors": [{"count": c} for c in counts],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": i}}
+                                   for i in range(len(counts))]}],
+    })
+
+
+def test_unirig_merge_returning_a_different_mesh_is_refused(tmp_path, monkeypatch):
+    """UniRig's merge moves weights onto our rig; it must not move geometry.
+
+    On Pious Force it handed back 311k vertices for a 296k target -- the mesh
+    torn into ribbons, visible in the rest pose before any clip plays -- while
+    exiting 0, so nothing downstream would have noticed.
+    """
+    import subprocess
+
+    from pipeline.adapters.motion import MotionStage
+
+    out = tmp_path / "out"
+    out.mkdir()
+    _mesh_glb(out / "_unirig_target.glb", [296136])
+    _mesh_glb(out / "_unirig_out.glb", [311103])
+    (out / "_unirig_in.fbx").write_bytes(b"fbx")
+
+    stage = MotionStage(unirig=str(tmp_path))
+    monkeypatch.setattr(stage, "_blender",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
+
+    assert stage.unirig_skin(tmp_path / "m.glb", "humanoid", [], out) is None
+
+    # ... and the same mesh back is accepted
+    _mesh_glb(out / "_unirig_out.glb", [296136])
+    assert stage.unirig_skin(tmp_path / "m.glb", "humanoid", [], out) \
+        == out / "_unirig_out.glb"
