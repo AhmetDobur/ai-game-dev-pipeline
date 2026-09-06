@@ -9,6 +9,13 @@ so the frame worth looking at is the one where a limb is furthest from where it
 started. `phase` is where in the clip to sample, and defaults to the contact
 fraction combat.gd uses for the cross, so the picture is the same instant the
 hitbox opens.
+
+Import note: the glTF importer's default bone display creates a 42-vertex
+"Icosphere" spanning a 2 m cube for every armature it reads. It is an artifact
+of the IMPORT, not something in the file -- the .glb itself contains one mesh --
+but it lands in bpy.data, inflates any bounding box computed over "all meshes",
+and reads exactly like a stray object shipping inside the character. Passing
+bone_heuristic="TEMPERANCE" stops it being created.
 """
 import sys
 
@@ -21,7 +28,7 @@ clip = args[2] if len(args) > 2 else "cross"
 phase = float(args[3]) if len(args) > 3 else 0.58
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=glb)
+bpy.ops.import_scene.gltf(filepath=glb, bone_heuristic="TEMPERANCE")
 
 arm = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
 action = next((a for a in bpy.data.actions if clip.lower() in a.name.lower()), None)

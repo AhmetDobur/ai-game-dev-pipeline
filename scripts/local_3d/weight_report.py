@@ -31,7 +31,7 @@ import bpy
 
 def report(path):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=path)
+    bpy.ops.import_scene.gltf(filepath=path, bone_heuristic="TEMPERANCE")
     mesh = next(o for o in bpy.context.scene.objects if o.type == "MESH")
     names = [g.name for g in mesh.vertex_groups]
     zs = [(mesh.matrix_world @ v.co).z for v in mesh.data.vertices]

@@ -90,12 +90,20 @@ func _ready() -> void:
 
 
 func _measure_reach() -> void:
+	# Only the SKINNED mesh counts. What the skeleton deforms is the character
+	# by definition, and a character scene may legitimately carry geometry that
+	# is not the character -- the concept sheet arms Veiled Shadow with a
+	# chained blade, and a blade held at arm's length would otherwise hand her
+	# a reach measured from the weapon's bounding box rather than her body.
 	var tallest := 0.0
-	for node in find_children("*", "VisualInstance3D", true, false):
-		var box: AABB = (node as VisualInstance3D).get_aabb()
-		tallest = maxf(tallest, box.size.y * node.global_transform.basis.get_scale().y)
+	for node in find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		if mi.skin == null and mi.skeleton.is_empty():
+			continue
+		tallest = maxf(tallest,
+				mi.get_aabb().size.y * mi.global_transform.basis.get_scale().y)
 	if tallest < 0.5:
-		tallest = FALLBACK_HEIGHT      # no mesh yet, or an unreadable one
+		tallest = FALLBACK_HEIGHT      # no skinned mesh yet, or an unreadable one
 	_reach = tallest * REACH_PER_HEIGHT
 
 
