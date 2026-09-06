@@ -2169,8 +2169,18 @@ def export_glb(path, arm=None, mesh=None):
     bpy.ops.object.select_all(action="DESELECT")
     for o in keep:
         o.select_set(True)
+    # glTF joints are points: a bone's tail is only ever implied by where its
+    # child sits, so a leaf bone loses its length in the file and the importer
+    # invents one from the parent. Measured on mo_pious_v4, LeftFoot came back
+    # 2.6x too long with its tip 0.17 m under the floor and LeftHand 19% long.
+    # That fabricated reach is what made cloak_audit score coat-skirt panels as
+    # "sitting on the hand" -- and it would mislead Godot IK and foot planting
+    # for the same reason. export_leaf_bone writes the tip joint, which turns
+    # every leaf into an interior bone whose tail the importer reads instead of
+    # guessing.
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB",
-                              use_selection=True, export_animations=True)
+                              use_selection=True, export_animations=True,
+                              export_leaf_bone=True)
 
 
 def main():

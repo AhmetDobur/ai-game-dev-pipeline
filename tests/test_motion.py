@@ -127,3 +127,47 @@ def test_motion_stage_defaults_stay_backwards_compatible(tmp_path, monkeypatch):
         tmp_path / "m.glb", "humanoid", ["idle"], [], tmp_path / "out")
 
     assert captured["height"] == 1.8 and captured["moveset"] == ""
+
+
+def test_export_writes_leaf_bone_tips():
+    """The rig must carry its leaf bones' lengths out of Blender.
+
+    glTF stores joints as points, so a leaf bone's tail exists nowhere in the
+    file and the importer fabricates one from the parent's length. That handed
+    the shipped character a foot bone 2.6x too long, whose tip sat below the
+    floor and swept the coat skirt into anything measuring "what is near the
+    foot" -- cloak_audit first, but Godot IK and hitboxes next. Nothing else in
+    the pipeline notices when this keyword goes missing, so this is the rail.
+    """
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    kwargs = {}
+    bpy = types.ModuleType("bpy")
+    bpy.ops = SimpleNamespace(
+        object=SimpleNamespace(select_all=lambda **k: None),
+        export_scene=SimpleNamespace(gltf=lambda **k: kwargs.update(k)))
+    bpy.context = SimpleNamespace(scene=SimpleNamespace(objects=[]))
+
+    saved = {k: sys.modules.get(k) for k in ("mathutils", "bpy")}
+    sys.modules["mathutils"] = types.ModuleType("mathutils")
+    sys.modules["bpy"] = bpy
+    try:
+        path = Path(__file__).resolve().parents[1] / "templates" / "blender_motion.py"
+        spec = importlib.util.spec_from_file_location("blender_motion_export", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        rig = type("Obj", (), {"type": "ARMATURE", "parent": None, "name": "rig",
+                               "select_set": lambda self, v: None})()
+        mod.export_glb("/tmp/x.glb", arm=rig)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    assert kwargs["export_leaf_bone"] is True
+    assert kwargs["use_selection"] is True and kwargs["export_animations"] is True
