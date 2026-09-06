@@ -222,13 +222,18 @@ def build_executors(cfg: dict, workspace: Path,
                        check=False, capture_output=True, timeout=600)
         # boot check: run the game headless for a few frames — a scene or script
         # that cannot load fails HERE, with the real godot error, not at export
-        b = subprocess.run([godot, "--headless", "--path", str(game_dir),
-                            "--quit-after", "10"],
-                           capture_output=True, encoding="utf-8", errors="replace",
-                           timeout=300)
-        boot_log = (b.stderr or "") + (b.stdout or "")
-        if b.returncode != 0 or "SCRIPT ERROR" in boot_log:
-            raise RuntimeError(f"game failed to boot:\n{boot_log[-2000:]}")
+        # Both scenes, named explicitly. The project now opens on the title
+        # screen, so booting the default scene alone stopped covering the world
+        # -- a world that could not load would have reached the export.
+        for scene in ("res://scenes/menu.tscn", "res://scenes/world.tscn"):
+            b = subprocess.run([godot, "--headless", "--path", str(game_dir),
+                                scene, "--quit-after", "10"],
+                               capture_output=True, encoding="utf-8",
+                               errors="replace", timeout=300)
+            boot_log = (b.stderr or "") + (b.stdout or "")
+            if b.returncode != 0 or "SCRIPT ERROR" in boot_log:
+                raise RuntimeError(
+                    f"{scene} failed to boot:\n{boot_log[-2000:]}")
 
         # photograph the world the run just built. Every previous run shipped an
         # .exe that nobody had looked at, so an empty or black world was

@@ -29,10 +29,11 @@ PROJECT_GODOT = """config_version=5
 [application]
 
 config/name="{title}"
-run/main_scene="res://scenes/world.tscn"
+run/main_scene="res://scenes/menu.tscn"
 
 [autoload]
 
+Settings="*res://scripts/settings.gd"
 DemoDrive="*res://scripts/demo_drive.gd"
 
 [editor]
@@ -427,6 +428,52 @@ shadow_enabled = true
 """
 
 
+MENU_TSCN = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/menu.gd" id="1"]
+
+[node name="Menu" type="Control"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1")
+shadow = Color({shadow})
+stone = Color({stone})
+accent = Color({accent})
+gold = Color({gold})
+title_text = "{title}"
+background = "{background}"
+world_scene = "res://scenes/world.tscn"
+"""
+
+
+def _menu_tscn(title: str, env_ref: str | None, background: str = "") -> str:
+    """The title screen, in the same palette the hall is keyed to.
+
+    The menu samples the run's own reference image rather than carrying a
+    hardcoded scheme, so a project generated from different concept art gets a
+    menu that belongs to it instead of one in somebody else's colours.
+    """
+    from .palette import roles
+    pal = roles(env_ref)
+
+    def c(role, floor=0.0):
+        r, g, b = pal[role]          # palette.roles yields 0..1 triples already
+        # Text has to stay legible whatever the art happens to be keyed to. The
+        # room's mid-tone is chosen for stone, not for type, and on this scheme
+        # it lands at 0.23/0.17/0.12 -- barely off the background. Lifting the
+        # swatch to a luminance floor keeps its hue and makes it readable.
+        lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        if floor and lum < floor:
+            k = floor / max(lum, 1e-3)
+            r, g, b = (min(1.0, v * k) for v in (r, g, b))
+        return f"{r:.3f}, {g:.3f}, {b:.3f}, 1"
+
+    return MENU_TSCN.format(shadow=c("shadow"), stone=c("stone", 0.62),
+                            accent=c("accent"), gold=c("gold", 0.45),
+                            title=title.replace('"', ""), background=background)
+
+
 def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
              dep_types: dict[str, str], dep_specs: dict[str, dict]) -> None:
     """Copy generated assets into the project and write every file Godot needs to
@@ -497,7 +544,7 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
     (game_dir / "export_presets.cfg").write_text(EXPORT_PRESETS, encoding="utf-8")
     # shipped with every project so the assemble step can photograph the world it
     # just built; harmless when unused, and it never steals an existing camera
-    for name in ("combat.gd", "cloak.gd", "demo_drive.gd"):
+    for name in ("combat.gd", "cloak.gd", "demo_drive.gd", "menu.gd", "settings.gd"):
         src = Path(__file__).resolve().parent.parent / "templates" / name
         if src.exists():
             shutil.copy2(src, game_dir / "scripts" / name)
@@ -523,3 +570,13 @@ def scaffold(game_dir: Path, title: str, dep_outputs: dict[str, list[str]],
         shutil.copy2(shot_src, game_dir / "scripts" / "godot_shot.gd")
     (game_dir / "scenes" / "world.tscn").write_text(
         _world_tscn(player_script, char_glbs, env_glbs, env_ref), encoding="utf-8")
+    # the menu's backdrop is the run's own environment reference, copied in so
+    # the exported game carries it
+    menu_bg = ""
+    if env_ref and Path(env_ref).exists():
+        dest = game_dir / "assets" / ("menu_bg" + Path(env_ref).suffix.lower())
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(env_ref, dest)
+        menu_bg = f"res://assets/{dest.name}"
+    (game_dir / "scenes" / "menu.tscn").write_text(
+        _menu_tscn(title, env_ref, menu_bg), encoding="utf-8")
