@@ -57,3 +57,24 @@ def test_motion_stage_raises_when_blender_makes_no_glb(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="motion stage failed"):
         motion.MotionStage().build(tmp_path / "m.glb", "humanoid", ["idle"], [],
                                    tmp_path / "o")
+
+
+def test_blender_motion_lines_reach_the_log(capsys, monkeypatch, tmp_path):
+    """Blender's output is captured so a good run is not 400 lines of glTF
+    chatter -- but the script's own [motion] lines are its only report of what
+    it decided, and swallowing them hid a stray object that shipped inside
+    every character."""
+    import subprocess
+
+    from pipeline.adapters.motion import MotionStage
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            "glTF: mumble mumble\n"
+                            "[motion] not exporting 1 stray object(s): Icosphere\n"
+                            "more chatter\n", ""))
+    MotionStage()._blender({"mesh": "x.glb"})
+    out = capsys.readouterr().out
+    assert "[motion] not exporting 1 stray object(s): Icosphere" in out
+    assert "mumble" not in out

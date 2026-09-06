@@ -61,11 +61,20 @@ class MotionStage:
         return None
 
     def _blender(self, args: dict, timeout: int | None = None):
-        return subprocess.run(
+        r = subprocess.run(
             [self.blender, "--background", "--python", self.script, "--",
              json.dumps(args)],
             capture_output=True, encoding="utf-8", errors="replace",
             timeout=timeout or self.timeout_s)
+        # Blender's output is captured so a successful run is not 400 lines of
+        # glTF chatter, but the script's own [motion] lines are the only report
+        # of what it decided -- which clip fell back to procedural, what strays
+        # it refused to export -- and swallowing those hid a stray object that
+        # shipped inside every character for weeks.
+        for line in (r.stdout or "").splitlines():
+            if line.startswith("[motion]"):
+                print(line, flush=True)
+        return r
 
     def unirig_skin(self, mesh_path: Path, body_plan: str, extras: list[str],
                     out_dir: Path) -> Path | None:

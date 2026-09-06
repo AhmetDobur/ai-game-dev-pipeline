@@ -2001,10 +2001,17 @@ def export_glb(path, arm=None, mesh=None):
         keep = {o for o in bpy.context.scene.objects
                 if o.type == "ARMATURE" or o.type == "MESH"}
     keep |= {o for o in bpy.context.scene.objects if o.parent in keep}
-    dropped = [o.name for o in bpy.context.scene.objects if o not in keep]
+    dropped = [o for o in bpy.context.scene.objects if o not in keep]
     if dropped:
         print(f"[motion] not exporting {len(dropped)} stray object(s): "
-              f"{', '.join(sorted(dropped)[:6])}")
+              f"{', '.join(sorted(o.name for o in dropped)[:6])}")
+    # Deleted, not merely deselected. use_selection alone did not hold: a stray
+    # 42-vertex Icosphere spanning a 2 m cube shipped inside both characters
+    # anyway, where it renders as nothing but inflates the AABB -- and an AABB
+    # is what the game measures a character's height and reach from. Removing
+    # the objects cannot be ignored by an exporter flag.
+    for o in dropped:
+        bpy.data.objects.remove(o, do_unlink=True)
     bpy.ops.object.select_all(action="DESELECT")
     for o in keep:
         o.select_set(True)
